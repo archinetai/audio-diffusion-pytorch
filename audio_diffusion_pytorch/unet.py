@@ -1,12 +1,12 @@
 import math
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Type, Union
+from typing import List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
-from einops import rearrange, repeat
-from einops_exts import check_shape, rearrange_many, repeat_many
+from einops import rearrange
+from einops_exts import rearrange_many, repeat_many
 from einops_exts.torch import EinopsToAndFrom
-from torch import Tensor, einsum, nn
+from torch import Tensor, einsum
 from torch.nn import functional as F
 
 from .utils import default, exists
@@ -103,7 +103,9 @@ class ConvBlock(nn.Module):
             dilation=dilation,
         )
 
-    def forward(self, x: Tensor, scale_shift: Tuple[Tensor, Tensor] = None) -> Tensor:
+    def forward(
+        self, x: Tensor, scale_shift: Optional[Tuple[Tensor, Tensor]] = None
+    ) -> Tensor:
         x = self.groupnorm(x)
         if exists(scale_shift):
             x = scale_and_shift(x, scale=scale_shift[0], shift=scale_shift[1])
@@ -119,7 +121,7 @@ class ResnetBlock(nn.Module):
         *,
         dilation: int = 1,
         num_groups: int,
-        time_context_features: int = None,
+        time_context_features: Optional[int] = None,
     ) -> None:
         super().__init__()
 
@@ -352,11 +354,11 @@ class ConvTransformerBlock(nn.Module):
 class CrossEmbedLayer(nn.Module):
     def __init__(
         self,
-        in_channels,
+        in_channels: int,
         *,
-        kernel_sizes,
-        stride,
-        out_channels=None,
+        kernel_sizes: Sequence[int],
+        stride: int,
+        out_channels: Optional[int] = None,
     ):
         super().__init__()
         assert all([*map(lambda t: (t % 2) == (stride % 2), kernel_sizes)])
@@ -398,9 +400,9 @@ class DownsampleBlock(nn.Module):
         num_groups: int,
         use_pre_downsample: bool,
         use_attention: bool,
-        attention_heads: int = None,
-        attention_features: int = None,
-        attention_multiplier: int = None,
+        attention_heads: Optional[int] = None,
+        attention_features: Optional[int] = None,
+        attention_multiplier: Optional[int] = None,
     ):
         super().__init__()
 
@@ -481,9 +483,9 @@ class UpsampleBlock(nn.Module):
         use_pre_upsample: bool,
         use_skip_scale: bool,
         use_attention: bool,
-        attention_heads: int = None,
-        attention_features: int = None,
-        attention_multiplier: int = None,
+        attention_heads: Optional[int] = None,
+        attention_features: Optional[int] = None,
+        attention_multiplier: Optional[int] = None,
     ):
         super().__init__()
 
@@ -531,15 +533,16 @@ class UpsampleBlock(nn.Module):
             use_nearest=use_nearest,
         )
 
-    def forward(self, x: Tensor, skips: Sequence[Tensor], t: Tensor) -> Tensor:
+    def add_skip(self, x: Tensor, skip: Tensor) -> Tensor:
+        return torch.cat([x, skip * self.skip_scale], dim=1)
 
-        add_skip = lambda x, skip: torch.cat([x, skip * self.skip_scale], dim=1)
+    def forward(self, x: Tensor, skips: Sequence[Tensor], t: Tensor) -> Tensor:
 
         if self.use_pre_upsample:
             x = self.upsample(x)
 
         for block in self.blocks:
-            x = add_skip(x, skip=skips.pop())
+            x = self.add_skip(x, skip=skips.pop())
             x = block(x, t)
 
         if self.use_attention:
@@ -559,8 +562,8 @@ class BottleneckBlock(nn.Module):
         time_context_features: int,
         num_groups: int,
         use_attention: bool,
-        attention_heads: int = None,
-        attention_features: int = None,
+        attention_heads: Optional[int] = None,
+        attention_features: Optional[int] = None,
     ):
         super().__init__()
 
@@ -623,7 +626,7 @@ class UNet(nn.Module):
         use_nearest_upsample: int,
         use_skip_scale: bool,
         use_attention_bottleneck: bool,
-        out_channels: int = None,
+        out_channels: Optional[int] = None,
     ):
         super().__init__()
 

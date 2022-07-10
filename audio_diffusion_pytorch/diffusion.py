@@ -1,10 +1,10 @@
 import math
-from typing import Callable, List, Tuple
+from typing import Callable, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange, reduce
+from einops import reduce
 from torch import Tensor
 
 from .utils import default
@@ -32,7 +32,7 @@ class Diffusion(nn.Module):
         denoise_fn: nn.Module,
         *,
         num_timesteps=1000,
-        loss_fn: Callable = F.l1_loss,
+        loss_fn: Callable=F.l1_loss,
         loss_weight_gamma=0.5,  # https://openreview.net/pdf?id=-NEXDKk8gZ page 5
         loss_weight_k=1
     ):
@@ -90,6 +90,7 @@ class DiffusionSampler(nn.Module):
         self.num_timesteps = diffusion.num_timesteps
 
         betas = diffusion.betas
+        alphas = diffusion.alphas
         alphas_cumprod = diffusion.alphas_cumprod
         alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], pad=(1, 0), value=1.0)
 
