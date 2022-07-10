@@ -32,14 +32,14 @@ class Diffusion(nn.Module):
         denoise_fn: nn.Module,
         *,
         num_timesteps=1000,
-        loss_fn: Callable=F.l1_loss,
+        loss_fn: str = 'l1',
         loss_weight_gamma=0.5,  # https://openreview.net/pdf?id=-NEXDKk8gZ page 5
         loss_weight_k=1
     ):
         super().__init__()
 
         self.denoise_fn = denoise_fn
-        self.loss_fn = loss_fn
+        self.loss_fn = F.l1_loss if loss_fn == 'l1' else F.mse_loss
         self.num_timesteps = num_timesteps
 
         self.register("betas", cosine_beta_schedule(timesteps=num_timesteps))
