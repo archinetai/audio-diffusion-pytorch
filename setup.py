@@ -6,6 +6,7 @@ setup(
     version="0.0.1",
     license="MIT",
     description="Audio Diffusion - PyTorch",
+    long_description="Audio Diffusion - PyTorch",
     long_description_content_type="text/markdown",
     author="Flavio Schneider",
     author_email="archinetai@protonmail.com",
