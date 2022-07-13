@@ -1,7 +1,8 @@
 
 # Audio Diffusion - PyTorch
 
-Unconditional audio generation using diffusion models, in PyTorch.
+Unconditional audio generation using diffusion models, in PyTorch. The goal of this repository is to explore different architectures and diffusion models to generate audio (speech and music) directly from/to the waveform.
+Progress will be documented in the [experiments](#experiments) section.
 
 ## Install
 
@@ -20,9 +21,9 @@ from audio_diffusion_pytorch import UNet1d, Diffusion, DiffusionSampler
 unet = UNet1d(
     in_channels=1,
     channels=128,
-    multipliers=(1, 2, 4, 4, 4, 4, 4),
-    factors=(4, 4, 4, 4, 2, 2),
-    attentions=(False, False, False, False, True, True),
+    multipliers=[1, 2, 4, 4, 4, 4, 4],
+    factors=[4, 4, 4, 4, 2, 2],
+    attentions=[False, False, False, False, True, True],
     attention_heads=8,
     attention_features=64,
     attention_multiplier=2,
@@ -34,9 +35,11 @@ unet = UNet1d(
     use_skip_scale=True,
     use_attention_bottleneck=True,
 )
+
 x = torch.randn(3, 1, 2 ** 15)
 t = torch.tensor([40, 10, 20])
-y = unet(x, t) # [2, 1, 32768], 2 samples of ~1.5 seconds of generated audio at 22kHz
+y = unet(x, t) # [3, 1, 32768], 3 audio tracks of ~1.6s sampled at 20050 Hz
+
 
 # Build diffusion to train denoise function
 diffusion = Diffusion(
@@ -46,13 +49,15 @@ diffusion = Diffusion(
     loss_weight_gamma=0.5,
     loss_weight_k=1
 )
+
 x = torch.randn(3, 1, 2 ** 15)
 loss = diffusion(x)
 loss.backwards() # Do this many times
 
+
 # Sample from diffusion model by converting normal tensor to audio
 sampler = DiffusionSampler(diffusion)
-y = sampler(x = torch.randn(1,1,2 ** 16)) # [1, 1, 32768]
+y = sampler(x = torch.randn(1, 1, 2 ** 15)) # [1, 1, 32768]
 ```
 
 ## Experiments
@@ -65,4 +70,5 @@ y = sampler(x = torch.randn(1,1,2 ** 16)) # [1, 1, 32768]
 ## Citations
 
 ```bibtex
+
 ```
