@@ -63,12 +63,54 @@ y = sampler(x = torch.randn(1, 1, 2 ** 15)) # [1, 1, 32768]
 ## Experiments
 
 ### Alpha
-[Report on wandb](https://wandb.ai/schneider/audio/reports/Audio-Diffusion-UNet-Alpha---VmlldzoyMjk3MzIz)
+[Report on wandb](https://wandb.ai/schneider/audio/reports/Audio-Diffusion-UNet-Alpha---VmlldzoyMjk3MzIz?accessToken=y0l3igdvnm4ogn4d3ph3b0i8twwcf7meufbviwt15f0qtasyn1i14hg340bkk1te)
 
 
+## Appreciation
+
+* [Phil Wang](https://github.com/lucidrains) for the beautiful open source contributions on [diffusion](https://github.com/lucidrains/denoising-diffusion-pytorch) and [Imagen](https://github.com/lucidrains/imagen-pytorch) on which a lot of inspiration is drawn.
 
 ## Citations
 
+DDPM
 ```bibtex
+@misc{2006.11239,
+Author = {Jonathan Ho and Ajay Jain and Pieter Abbeel},
+Title = {Denoising Diffusion Probabilistic Models},
+Year = {2020},
+Month = {6},
+Eprint = {arXiv:2006.11239},
+}
+```
 
+Diffusion cosine schedule
+```bibtex
+@misc{2102.09672,
+Author = {Alex Nichol and Prafulla Dhariwal},
+Title = {Improved Denoising Diffusion Probabilistic Models},
+Year = {2021},
+Month = {2},
+Eprint = {arXiv:2102.09672},
+}
+```
+
+Diffusion weighted loss
+```bibtex
+@misc{2204.00227,
+Author = {Jooyoung Choi and Jungbeom Lee and Chaehun Shin and Sungwon Kim and Hyunwoo Kim and Sungroh Yoon},
+Title = {Perception Prioritized Training of Diffusion Models},
+Year = {2022},
+Month = {4},
+Eprint = {arXiv:2204.00227},
+}
+```
+
+Improved UNet architecture
+```bibtex
+@misc{2205.11487,
+Author = {Chitwan Saharia and William Chan and Saurabh Saxena and Lala Li and Jay Whang and Emily Denton and Seyed Kamyar Seyed Ghasemipour and Burcu Karagol Ayan and S. Sara Mahdavi and Rapha Gontijo Lopes and Tim Salimans and Jonathan Ho and David J Fleet and Mohammad Norouzi},
+Title = {Photorealistic Text-to-Image Diffusion Models with Deep Language Understanding},
+Year = {2022},
+Eprint = {arXiv:2205.11487},
+}
 ```
