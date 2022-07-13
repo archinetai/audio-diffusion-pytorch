@@ -746,7 +746,7 @@ class UNet1d(nn.Module):
         return x
 
 
-class UNetAlpha(UNet1d):
+class UNet1dAlpha(UNet1d):
     def __init__(self, *args, **kwargs):
         default_kwargs = dict(
             in_channels=1,
