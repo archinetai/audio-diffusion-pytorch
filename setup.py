@@ -6,15 +6,13 @@ setup(
     version="0.0.1",
     license="MIT",
     description="Audio Diffusion - PyTorch",
+    long_description_content_type="text/markdown",
     author="Flavio Schneider",
     author_email="archinetai@protonmail.com",
     url="https://github.com/archinetai/audio-diffusion-pytorch",
-    keywords=[
-        "artificial intelligence",
-        "deep learning",
-    ],
+    keywords=["artificial intelligence", "deep learning", "audio generation"],
     install_requires=[
-        "torch>=1.6", 
+        "torch>=1.6",
         "data-science-types>=0.2",
         "einops>=0.4",
         "einops-exts>=0.0.3",
