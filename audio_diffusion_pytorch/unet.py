@@ -12,6 +12,12 @@ from torch.nn import functional as F
 from .utils import default, exists
 
 
+def Conv1d(*args, **kwargs):
+    return nn.Conv1d(*args, **kwargs)
+
+def ConvTranspose1d(*args, **kwargs):
+    return nn.ConvTranspose1d(*args, **kwargs)
+
 class SinusoidalPositionalEmbedding(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -25,7 +31,7 @@ class SinusoidalPositionalEmbedding(nn.Module):
         return torch.cat((emb.sin(), emb.cos()), dim=-1)
 
 
-def Downsample(
+def Downsample1d(
     in_channels: int,
     out_channels: int,
     factor: int,
@@ -33,7 +39,7 @@ def Downsample(
 ) -> nn.Module:
     assert kernel_multiplier % 2 == 0, "Kernel multiplier must be even"
 
-    return nn.Conv1d(
+    return Conv1d(
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=factor * kernel_multiplier + 1,
@@ -43,19 +49,19 @@ def Downsample(
     )
 
 
-def Upsample(
+def Upsample1d(
     in_channels: int, out_channels: int, factor: int, use_nearest: bool = False
 ) -> nn.Module:
 
     if factor == 1:
-        return nn.Conv1d(
+        return Conv1d(
             in_channels=in_channels, out_channels=out_channels, kernel_size=3, padding=1
         )
 
     if use_nearest:
         return nn.Sequential(
             nn.Upsample(scale_factor=factor, mode="nearest"),
-            nn.Conv1d(
+            Conv1d(
                 in_channels=in_channels,
                 out_channels=out_channels,
                 kernel_size=3,
@@ -63,7 +69,7 @@ def Upsample(
             ),
         )
     else:
-        return nn.ConvTranspose1d(
+        return ConvTranspose1d(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=factor * 2,
@@ -76,8 +82,7 @@ def Upsample(
 def scale_and_shift(x: Tensor, scale: Tensor, shift: Tensor) -> Tensor:
     return x * (scale + 1) + shift
 
-
-class ConvBlock(nn.Module):
+class ConvBlock1d(nn.Module):
     def __init__(
         self,
         in_channels: int,
@@ -95,7 +100,7 @@ class ConvBlock(nn.Module):
             else nn.Identity()
         )
         self.activation = nn.SiLU()
-        self.project = nn.Conv1d(
+        self.project = Conv1d(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=3,
@@ -113,7 +118,7 @@ class ConvBlock(nn.Module):
         return self.project(x)
 
 
-class ResnetBlock(nn.Module):
+class ResnetBlock1d(nn.Module):
     def __init__(
         self,
         in_channels: int,
@@ -136,19 +141,19 @@ class ResnetBlock(nn.Module):
             else nn.Identity()
         )
 
-        self.block1 = ConvBlock(
+        self.block1 = ConvBlock1d(
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
             dilation=dilation,
         )
 
-        self.block2 = ConvBlock(
+        self.block2 = ConvBlock1d(
             in_channels=out_channels, out_channels=out_channels, num_groups=num_groups
         )
 
         self.to_out = (
-            nn.Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=1)
+            Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=1)
             if in_channels != out_channels
             else nn.Identity()
         )
@@ -296,7 +301,7 @@ class Attention(CrossAttention):
         return super().forward(x, context=x, *args, **kwargs)
 
 
-class ConvLayerNorm(nn.Module):
+class LayerNorm1d(nn.Module):
     def __init__(self, channels: int, *, bias: bool = True, eps: float = 1e-5):
         super().__init__()
         self.eps = eps
@@ -311,22 +316,22 @@ class ConvLayerNorm(nn.Module):
         return norm + self.b if self.bias else norm
 
 
-def ConvFeedForward(channels: int, multiplier: int = 2):
+def FeedForward1d(channels: int, multiplier: int = 2):
     mid_channels = int(channels * multiplier)
     return nn.Sequential(
-        ConvLayerNorm(channels=channels, bias=False),
-        nn.Conv1d(
+        LayerNorm1d(channels=channels, bias=False),
+        Conv1d(
             in_channels=channels, out_channels=mid_channels, kernel_size=1, bias=False
         ),
         nn.GELU(),
-        ConvLayerNorm(channels=mid_channels, bias=False),
-        nn.Conv1d(
+        LayerNorm1d(channels=mid_channels, bias=False),
+        Conv1d(
             in_channels=mid_channels, out_channels=channels, kernel_size=1, bias=False
         ),
     )
 
 
-class ConvTransformerBlock(nn.Module):
+class TransformerBlock1d(nn.Module):
     def __init__(
         self,
         channels: int,
@@ -343,7 +348,7 @@ class ConvTransformerBlock(nn.Module):
                 features=channels, num_heads=num_heads, head_features=head_features
             ),
         )
-        self.feed_forward = ConvFeedForward(channels=channels, multiplier=multiplier)
+        self.feed_forward = FeedForward1d(channels=channels, multiplier=multiplier)
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.attention(x) + x
@@ -351,7 +356,7 @@ class ConvTransformerBlock(nn.Module):
         return x
 
 
-class CrossEmbedLayer(nn.Module):
+class CrossEmbed1d(nn.Module):
     def __init__(
         self,
         in_channels: int,
@@ -373,7 +378,7 @@ class CrossEmbedLayer(nn.Module):
         self.convs = nn.ModuleList([])
         for kernel_size, channels in zip(kernel_sizes, channels_list):
             self.convs += [
-                nn.Conv1d(
+                Conv1d(
                     in_channels=in_channels,
                     out_channels=channels,
                     kernel_size=kernel_size,
@@ -387,7 +392,7 @@ class CrossEmbedLayer(nn.Module):
         return torch.cat(out_list, dim=1)
 
 
-class DownsampleBlock(nn.Module):
+class DownsampleBlock1d(nn.Module):
     def __init__(
         self,
         in_channels: int,
@@ -419,7 +424,7 @@ class DownsampleBlock(nn.Module):
 
         self.blocks = nn.ModuleList(
             [
-                ResnetBlock(
+                ResnetBlock1d(
                     in_channels=channels,
                     out_channels=channels,
                     dilation=dilation,
@@ -431,7 +436,7 @@ class DownsampleBlock(nn.Module):
         )
 
         self.transformer = (
-            ConvTransformerBlock(
+            TransformerBlock1d(
                 channels=channels,
                 num_heads=attention_heads,
                 head_features=attention_features,
@@ -441,7 +446,7 @@ class DownsampleBlock(nn.Module):
             else nn.Identity()
         )
 
-        self.downsample = Downsample(
+        self.downsample = Downsample1d(
             in_channels=in_channels,
             out_channels=out_channels,
             factor=factor,
@@ -468,7 +473,7 @@ class DownsampleBlock(nn.Module):
         return x, skips
 
 
-class UpsampleBlock(nn.Module):
+class UpsampleBlock1d(nn.Module):
     def __init__(
         self,
         in_channels: int,
@@ -504,7 +509,7 @@ class UpsampleBlock(nn.Module):
 
         self.blocks = nn.ModuleList(
             [
-                ResnetBlock(
+                ResnetBlock1d(
                     in_channels=channels + skip_channels,
                     out_channels=channels,
                     dilation=dilation,
@@ -516,7 +521,7 @@ class UpsampleBlock(nn.Module):
         )
 
         self.transformer = (
-            ConvTransformerBlock(
+            TransformerBlock1d(
                 channels=channels,
                 num_heads=attention_heads,
                 head_features=attention_features,
@@ -526,7 +531,7 @@ class UpsampleBlock(nn.Module):
             else nn.Identity()
         )
 
-        self.upsample = Upsample(
+        self.upsample = Upsample1d(
             in_channels=in_channels,
             out_channels=out_channels,
             factor=factor,
@@ -554,7 +559,7 @@ class UpsampleBlock(nn.Module):
         return x
 
 
-class BottleneckBlock(nn.Module):
+class BottleneckBlock1d(nn.Module):
     def __init__(
         self,
         channels: int,
@@ -573,7 +578,7 @@ class BottleneckBlock(nn.Module):
 
         self.use_attention = use_attention
 
-        self.pre_block = ResnetBlock(
+        self.pre_block = ResnetBlock1d(
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
@@ -594,7 +599,7 @@ class BottleneckBlock(nn.Module):
             else nn.Identity()
         )
 
-        self.post_block = ResnetBlock(
+        self.post_block = ResnetBlock1d(
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
@@ -608,7 +613,7 @@ class BottleneckBlock(nn.Module):
         return x
 
 
-class UNet(nn.Module):
+class UNet1d(nn.Module):
     def __init__(
         self,
         in_channels: int,
@@ -640,7 +645,7 @@ class UNet(nn.Module):
             and len(dilations) == num_layers
         )
 
-        self.to_in = CrossEmbedLayer(
+        self.to_in = CrossEmbed1d(
             in_channels=in_channels,
             out_channels=channels,
             kernel_sizes=kernel_sizes_init,
@@ -658,7 +663,7 @@ class UNet(nn.Module):
 
         self.downsamples = nn.ModuleList(
             [
-                DownsampleBlock(
+                DownsampleBlock1d(
                     in_channels=channels * multipliers[i],
                     out_channels=channels * multipliers[i + 1],
                     time_context_features=time_context_features,
@@ -676,7 +681,7 @@ class UNet(nn.Module):
             ]
         )
 
-        self.bottleneck = BottleneckBlock(
+        self.bottleneck = BottleneckBlock1d(
             channels=channels * multipliers[-1],
             time_context_features=time_context_features,
             num_groups=resnet_groups,
@@ -687,7 +692,7 @@ class UNet(nn.Module):
 
         self.upsamples = nn.ModuleList(
             [
-                UpsampleBlock(
+                UpsampleBlock1d(
                     in_channels=channels * multipliers[i + 1],
                     skip_channels=channels * multipliers[i + 1],
                     out_channels=channels * multipliers[i],
@@ -708,13 +713,13 @@ class UNet(nn.Module):
         )
 
         self.to_out = nn.Sequential(
-            ResnetBlock(
+            ResnetBlock1d(
                 in_channels=channels,
                 out_channels=channels,
                 num_groups=resnet_groups,
                 time_context_features=time_context_features,
             ),
-            nn.Conv1d(in_channels=channels, out_channels=out_channels, kernel_size=1),
+            Conv1d(in_channels=channels, out_channels=out_channels, kernel_size=1),
         )
 
     def forward(self, x: Tensor, t: Tensor):
@@ -738,7 +743,7 @@ class UNet(nn.Module):
         return x
 
 
-class UNetAlpha(UNet):
+class UNetAlpha(UNet1d):
     def __init__(self, *args, **kwargs):
         default_kwargs = dict(
             in_channels=1,
