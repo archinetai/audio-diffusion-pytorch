@@ -15,8 +15,10 @@ from .utils import default, exists
 def Conv1d(*args, **kwargs):
     return nn.Conv1d(*args, **kwargs)
 
+
 def ConvTranspose1d(*args, **kwargs):
     return nn.ConvTranspose1d(*args, **kwargs)
+
 
 class SinusoidalPositionalEmbedding(nn.Module):
     def __init__(self, dim):
@@ -81,6 +83,7 @@ def Upsample1d(
 
 def scale_and_shift(x: Tensor, scale: Tensor, shift: Tensor) -> Tensor:
     return x * (scale + 1) + shift
+
 
 class ConvBlock1d(nn.Module):
     def __init__(
