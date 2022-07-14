@@ -116,3 +116,14 @@ Month = {5},
 Eprint = {arXiv:2205.11487},
 }
 ```
+
+Elucidated diffusion
+```bibtex
+@misc{2206.00364,
+Author = {Tero Karras and Miika Aittala and Timo Aila and Samuli Laine},
+Title = {Elucidating the Design Space of Diffusion-Based Generative Models},
+Year = {2022},
+Month = {6},
+Eprint = {arXiv:2206.00364},
+}
+```
