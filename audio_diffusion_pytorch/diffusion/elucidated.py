@@ -1,5 +1,5 @@
-from math import log, sqrt
-from typing import Any, Callable, Tuple
+from math import sqrt
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -62,7 +62,7 @@ class Diffusion(nn.Module):
         self,
         net: nn.Module,
         *,
-        sigma_sampler: Sampler,
+        sigma_sampler: SigmaSampler,
         sigma_data: float,  # data distribution standard deviation
     ):
         super().__init__()
@@ -157,11 +157,17 @@ class DiffusionSampler(nn.Module):
         self.s_tmin = s_tmin
         self.s_tmax = s_tmax
         self.s_noise = s_noise
-        self.gamma = min(s_churn / num_steps, sqrt(2) - 1)
+        self.s_churn = s_churn
 
-    def step(self, x: Tensor, sigma: Tensor, sigma_next: Tensor, clamp: bool = True):
+    def step(
+        self,
+        x: Tensor,
+        sigma: Tensor,
+        sigma_next: Tensor,
+        gamma: Tensor,
+        clamp: bool = True,
+    ):
         """Algorithm 2 (step)"""
-        gamma = self.gamma if self.s_tmin <= sigma <= self.s_tmax else 0.0
         # Select temporarily increased noise level
         sigma_hat = sigma + gamma * sigma
         # Add noise to move from sigma to sigma_hat
@@ -179,15 +185,21 @@ class DiffusionSampler(nn.Module):
         return x_next
 
     def forward(self, x: Tensor, num_steps: int = None) -> Tensor:
-        b, device = x.shape[0], x.device
+        device = x.device
         num_steps = default(num_steps, self.num_steps)
         # Compute sigmas using schedule
         sigmas = self.sigma_schedule(num_steps, device)
         # Sample from first sigma distribution
         x = sigmas[0] * x
+        # Compute gammas
+        gammas = torch.where(
+            (sigmas >= self.s_tmin) & (sigmas <= self.s_tmax),
+            min(self.s_churn / num_steps, sqrt(2) - 1),
+            0.0,
+        )
         # Denoise x
         for i in range(num_steps - 1):
-            x = self.step(x, sigma=sigmas[i], sigma_next=sigmas[i + 1])
+            x = self.step(x, sigma=sigmas[i], sigma_next=sigmas[i + 1], gamma=gammas[i])
 
         x = x.clamp(-1.0, 1.0)
         return x
