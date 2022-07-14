@@ -12,12 +12,12 @@ from ..utils import default, exists
 """ Samplers and sigma schedules """
 
 
-class Sampler:
+class SigmaSampler:
     def __call__(self, num_samples: int, device: str):
         raise NotImplementedError()
 
 
-class LogNormalSampler(Sampler):
+class LogNormalSampler(SigmaSampler):
     def __init__(self, mean: float, std: float):
         self.mean = mean
         self.std = std
