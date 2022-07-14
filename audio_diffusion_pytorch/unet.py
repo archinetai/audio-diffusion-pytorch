@@ -1,4 +1,4 @@
-import math
+from math import log, pi
 from typing import List, Optional, Sequence, Tuple
 
 import torch
@@ -21,16 +21,44 @@ def ConvTranspose1d(*args, **kwargs):
 
 
 class SinusoidalPositionalEmbedding(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim: int):
         super().__init__()
         self.dim = dim
 
-    def forward(self, x):
+    def forward(self, x: Tensor) -> Tensor:
         half_dim = self.dim // 2
-        emb = math.log(10000) / (half_dim - 1)
+        emb = log(10000) / (half_dim - 1)
         emb = torch.exp(torch.arange(half_dim, device=x.device) * -emb)
         emb = rearrange(x, "i -> i 1") * rearrange(emb, "j -> 1 j")
         return torch.cat((emb.sin(), emb.cos()), dim=-1)
+
+
+class LearnedPositionalEmbedding(nn.Module):
+    """Used for continuous time"""
+
+    def __init__(self, dim: int):
+        super().__init__()
+        assert (dim % 2) == 0
+        half_dim = dim // 2
+        self.weights = nn.Parameter(torch.randn(half_dim))
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = rearrange(x, "b -> b 1")
+        freqs = x * rearrange(self.weights, "d -> 1 d") * 2 * pi
+        fouriered = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
+        fouriered = torch.cat((x, fouriered), dim=-1)
+        return fouriered
+
+
+def TimePositionalEmbedding(dim: int, out_features: int, use_learned: bool):
+    return nn.Sequential(
+        LearnedPositionalEmbedding(dim)
+        if use_learned
+        else SinusoidalPositionalEmbedding(dim),
+        nn.Linear(
+            in_features=dim + 1 if use_learned else dim, out_features=out_features
+        ),
+    )
 
 
 def Downsample1d(
@@ -631,6 +659,7 @@ class UNet1d(nn.Module):
         resnet_groups: int,
         kernel_multiplier_downsample: int,
         kernel_sizes_init: Sequence[int],
+        use_learned_time_embedding: bool,
         use_nearest_upsample: int,
         use_skip_scale: bool,
         use_attention_bottleneck: bool,
@@ -656,8 +685,11 @@ class UNet1d(nn.Module):
         )
 
         self.to_time = nn.Sequential(
-            SinusoidalPositionalEmbedding(dim=channels),
-            nn.Linear(in_features=channels, out_features=time_context_features),
+            TimePositionalEmbedding(
+                dim=channels,
+                out_features=time_context_features,
+                use_learned=use_learned_time_embedding,
+            ),
             nn.SiLU(),
             nn.Linear(
                 in_features=time_context_features, out_features=time_context_features
@@ -751,18 +783,26 @@ class UNet1dAlpha(UNet1d):
         default_kwargs = dict(
             in_channels=1,
             channels=128,
-            multipliers=(1, 2, 4, 4, 4, 4),
-            factors=(4, 4, 4, 2, 2),
-            attentions=(False, False, False, True, True),
+            multipliers=[1, 2, 4, 4, 4, 4, 4],
+            factors=[4, 4, 4, 4, 2, 2],
+            attentions=[False, False, False, False, True, True],
             attention_heads=8,
             attention_features=64,
             attention_multiplier=2,
-            dilations=((1, 3, 9), (1, 3, 9), (1, 3, 9), (1, 1, 1), (1, 1, 1)),
+            dilations=[
+                [1, 1, 1],
+                [1, 1, 1],
+                [1, 1, 1],
+                [1, 1, 1],
+                [1, 1, 1],
+                [1, 1, 1],
+            ],
             resnet_groups=8,
-            kernel_multiplier_downsample=10,
-            kernel_sizes_init=(41, 21, 11),
+            kernel_multiplier_downsample=2,
+            kernel_sizes_init=[1, 3, 7],
             use_nearest_upsample=False,
             use_skip_scale=True,
             use_attention_bottleneck=True,
+            use_learned_time_embedding=True,
         )
         super().__init__(*args, **{**default_kwargs, **kwargs})
