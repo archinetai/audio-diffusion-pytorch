@@ -15,7 +15,8 @@ pip install audio-diffusion-pytorch
 ## Usage
 
 ```py
-from audio_diffusion_pytorch import UNet1d, Diffusion, DiffusionSampler
+from audio_diffusion_pytorch import UNet1d
+from audio_diffusion_pytorch.diffusion.ddpm import Diffusion, DiffusionSampler
 
 # Construct denoising function
 unet = UNet1d(
@@ -68,7 +69,7 @@ y = sampler(x = torch.randn(1, 1, 2 ** 15)) # [1, 1, 32768]
 
 ## Appreciation
 
-* [Phil Wang](https://github.com/lucidrains) for the beautiful open source contributions on [diffusion](https://github.com/lucidrains/denoising-diffusion-pytorch) and [Imagen](https://github.com/lucidrains/imagen-pytorch) on which a lot of inspiration is drawn.
+* [Phil Wang](https://github.com/lucidrains) for the beautiful open source contributions on [diffusion](https://github.com/lucidrains/denoising-diffusion-pytorch) and [Imagen](https://github.com/lucidrains/imagen-pytorch). 
 
 ## Citations
 
@@ -111,6 +112,7 @@ Improved UNet architecture
 Author = {Chitwan Saharia and William Chan and Saurabh Saxena and Lala Li and Jay Whang and Emily Denton and Seyed Kamyar Seyed Ghasemipour and Burcu Karagol Ayan and S. Sara Mahdavi and Rapha Gontijo Lopes and Tim Salimans and Jonathan Ho and David J Fleet and Mohammad Norouzi},
 Title = {Photorealistic Text-to-Image Diffusion Models with Deep Language Understanding},
 Year = {2022},
+Month = {5},
 Eprint = {arXiv:2205.11487},
 }
 ```
