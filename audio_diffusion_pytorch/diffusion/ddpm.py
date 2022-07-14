@@ -1,4 +1,4 @@
-
+from math import pi
 from typing import Callable, Tuple
 
 import torch
@@ -6,7 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import reduce
 from torch import Tensor
-from math import pi 
 
 from ..utils import default
 

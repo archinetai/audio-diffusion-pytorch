@@ -1,2 +1,2 @@
-from . import diffusion 
-from .unet import UNet1d 
+from . import diffusion
+from .unet import UNet1d

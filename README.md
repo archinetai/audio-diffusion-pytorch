@@ -69,7 +69,7 @@ y = sampler(x = torch.randn(1, 1, 2 ** 15)) # [1, 1, 32768]
 
 ## Appreciation
 
-* [Phil Wang](https://github.com/lucidrains) for the beautiful open source contributions on [diffusion](https://github.com/lucidrains/denoising-diffusion-pytorch) and [Imagen](https://github.com/lucidrains/imagen-pytorch). 
+* [Phil Wang](https://github.com/lucidrains) for the beautiful open source contributions on [diffusion](https://github.com/lucidrains/denoising-diffusion-pytorch) and [Imagen](https://github.com/lucidrains/imagen-pytorch).
 
 ## Citations
 
