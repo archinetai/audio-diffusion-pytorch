@@ -4,6 +4,7 @@ from typing import List, Optional, Sequence, Tuple
 import torch
 import torch.nn as nn
 from einops import rearrange
+from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many, repeat_many
 from einops_exts.torch import EinopsToAndFrom
 from torch import Tensor, einsum
@@ -664,6 +665,7 @@ class UNet1d(nn.Module):
         use_skip_scale: bool,
         use_attention_bottleneck: bool,
         out_channels: Optional[int] = None,
+        patch_size: int = 1,
     ):
         super().__init__()
 
@@ -677,11 +679,14 @@ class UNet1d(nn.Module):
             and len(dilations) == num_layers
         )
 
-        self.to_in = CrossEmbed1d(
-            in_channels=in_channels,
-            out_channels=channels,
-            kernel_sizes=kernel_sizes_init,
-            stride=1,
+        self.to_in = nn.Sequential(
+            Rearrange("b c (l p) -> b (c p) l", p=patch_size),
+            CrossEmbed1d(
+                in_channels=in_channels * patch_size,
+                out_channels=channels,
+                kernel_sizes=kernel_sizes_init,
+                stride=1,
+            ),
         )
 
         self.to_time = nn.Sequential(
@@ -754,7 +759,12 @@ class UNet1d(nn.Module):
                 num_groups=resnet_groups,
                 time_context_features=time_context_features,
             ),
-            Conv1d(in_channels=channels, out_channels=out_channels, kernel_size=1),
+            Conv1d(
+                in_channels=channels,
+                out_channels=out_channels * patch_size,
+                kernel_size=1,
+            ),
+            Rearrange("b (c p) l -> b c (l p)", p=patch_size),
         )
 
     def forward(self, x: Tensor, t: Tensor):
@@ -797,6 +807,31 @@ class UNet1dAlpha(UNet1d):
                 [1, 1, 1],
                 [1, 1, 1],
             ],
+            resnet_groups=8,
+            kernel_multiplier_downsample=2,
+            kernel_sizes_init=[1, 3, 7],
+            use_nearest_upsample=False,
+            use_skip_scale=True,
+            use_attention_bottleneck=True,
+            use_learned_time_embedding=True,
+            patch_size=1,
+        )
+        super().__init__(*args, **{**default_kwargs, **kwargs})
+
+
+class UNet1dBravo(UNet1d):
+    def __init__(self, *args, **kwargs):
+        default_kwargs = dict(
+            in_channels=1,
+            patch_size=4,
+            channels=128,
+            multipliers=[1, 2, 4, 4, 4, 4, 4],
+            factors=[4, 4, 4, 4, 2, 2],
+            attentions=[False, False, False, False, True, True],
+            attention_heads=8,
+            attention_features=64,
+            attention_multiplier=2,
+            dilations=[[1, 1], [1, 1], [1, 1], [1, 1], [1, 1], [1, 1]],
             resnet_groups=8,
             kernel_multiplier_downsample=2,
             kernel_sizes_init=[1, 3, 7],
