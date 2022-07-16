@@ -66,6 +66,8 @@ y = sampler(x = torch.randn(1, 1, 2 ** 15)) # [1, 1, 32768]
 ### Alpha
 [Report on wandb](https://wandb.ai/schneider/audio/reports/Audio-Diffusion-UNet-Alpha---VmlldzoyMjk3MzIz?accessToken=y0l3igdvnm4ogn4d3ph3b0i8twwcf7meufbviwt15f0qtasyn1i14hg340bkk1te)
 
+### Bravo
+[Report on wandb](https://wandb.ai/schneider/audio/reports/Audio-Diffusion-Bravo---VmlldzoyMzE4NjIx?accessToken=qt2w1jeqch9l5v3ffjns99p69jsmexk849dszyiennfbivgg396378u6ken2fm2d)
 
 ## Appreciation
 
