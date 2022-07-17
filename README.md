@@ -14,6 +14,8 @@ pip install audio-diffusion-pytorch
 
 ## Usage
 
+
+### UNet1d
 ```py
 from audio_diffusion_pytorch import UNet1d
 
@@ -64,6 +66,8 @@ y = sampler(x = torch.randn(1, 1, 2 ** 15)) # [1, 1, 32768]
 ```
 
 ### Elucidated Diffusion
+Note that here we use `patch_size=4` and `use_learned_time_embedding=True` for the UNet1d.
+
 ```python
 from audio_diffusion_pytorch.diffusion.elucidated import Diffusion, DiffusionSampler, LogNormalSampler, KerrasSchedule
 
