@@ -16,7 +16,6 @@ pip install audio-diffusion-pytorch
 
 ```py
 from audio_diffusion_pytorch import UNet1d
-from audio_diffusion_pytorch.diffusion.ddpm import Diffusion, DiffusionSampler
 
 # Construct denoising function
 unet = UNet1d(
@@ -40,8 +39,11 @@ unet = UNet1d(
 x = torch.randn(3, 1, 2 ** 15)
 t = torch.tensor([40, 10, 20])
 y = unet(x, t) # [3, 1, 32768], 3 audio tracks of ~1.6s sampled at 20050 Hz
+```
 
-
+### Diffusion
+```py
+from audio_diffusion_pytorch.diffusion.ddpm import Diffusion, DiffusionSampler
 # Build diffusion to train denoise function
 diffusion = Diffusion(
     denoise_fn=unet,
