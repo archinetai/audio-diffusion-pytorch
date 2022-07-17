@@ -61,6 +61,36 @@ sampler = DiffusionSampler(diffusion)
 y = sampler(x = torch.randn(1, 1, 2 ** 15)) # [1, 1, 32768]
 ```
 
+### Elucidated Diffusion
+```python
+from audio_diffusion_pytorch.diffusion.elucidated import Diffusion, DiffusionSampler, LogNormalSampler, KerrasSchedule
+
+diffusion = Diffusion(
+    net=unet,
+    sigma_sampler=LogNormalSampler(mean = -1.2, std = 1.2),
+    sigma_data=0.07
+)
+x = torch.randn(3, 1, 2 ** 15)
+loss = diffusion(x)
+loss.backward() # Do this many times
+
+
+sampler = DiffusionSampler(
+    diffusion,
+    num_steps=100,
+    sigma_schedule=KerrasSchedule(
+        sigma_min=0.002,
+        sigma_max=2
+    ),
+    s_tmin=0,
+    s_tmax=10,
+    s_churn=40,
+    s_noise=1.003
+)
+y = sampler(x = torch.randn(1,1,2 ** 15))
+
+```
+
 ## Experiments
 
 ### Alpha
@@ -72,6 +102,7 @@ y = sampler(x = torch.randn(1, 1, 2 ** 15)) # [1, 1, 32768]
 ## Appreciation
 
 * [Phil Wang](https://github.com/lucidrains) for the beautiful open source contributions on [diffusion](https://github.com/lucidrains/denoising-diffusion-pytorch) and [Imagen](https://github.com/lucidrains/imagen-pytorch).
+* [Katherine Crowson](https://github.com/crowsonkb) for the experiments with [k-diffusion](https://github.com/crowsonkb/k-diffusion).
 
 ## Citations
 
