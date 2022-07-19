@@ -212,36 +212,42 @@ class InsertNullTokens(nn.Module):
         self.num_heads = num_heads
         self.tokens = nn.Parameter(torch.randn(2, head_features))
 
-    def forward(self, k: Tensor, v: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(
+        self, k: Tensor, v: Tensor, mask: Tensor = None
+    ) -> Tuple[Tensor, Tensor]:
         b = k.shape[0]
         nk, nv = repeat_many(
             self.tokens.unbind(dim=-2), "d -> b h 1 d", h=self.num_heads, b=b
         )
         k = torch.cat((nk, k), dim=-2)
         v = torch.cat((nv, v), dim=-2)
-        return k, v
+        mask = F.pad(mask, pad=(1, 0), value=True)
+        return k, v, mask
 
 
-def attention_mask(sim: Tensor, mask: Tensor) -> Tensor:
-    mask = F.pad(mask, pad=(1, 0), value=True)
+class LayerNorm(nn.Module):
+    def __init__(self, features: int, *, bias: bool = True, eps: float = 1e-5):
+        super().__init__()
+        self.bias = bias
+        self.eps = eps
+        self.g = nn.Parameter(torch.ones(features))
+        self.b = nn.Parameter(torch.zeros(features)) if bias else None
+
+    def forward(self, x: Tensor) -> Tensor:
+        var = torch.var(x, dim=-1, unbiased=False, keepdim=True)
+        mean = torch.mean(x, dim=-1, keepdim=True)
+        norm = (x - mean) * (var + self.eps).rsqrt() * self.g
+        return norm + self.b if self.bias else norm
+
+
+def attention_mask(
+    sim: Tensor,
+    mask: Tensor,
+) -> Tensor:
     mask = rearrange(mask, "b j -> b 1 1 j")
     max_neg_value = -torch.finfo(sim.dtype).max
     sim = sim.masked_fill(~mask, max_neg_value)
     return sim
-
-
-class CenteredLayerNorm(nn.Module):
-    def __init__(self, features: int):
-        super().__init__()
-        # Learned variance (gamma), fixed mean (bias)
-        self.gamma = nn.Parameter(torch.ones(features))
-        self.register_buffer("beta", torch.zeros(features))
-
-    def forward(self, x: Tensor) -> Tensor:
-        shape = (x.shape[-1],)
-        return F.layer_norm(
-            x, normalized_shape=shape, weight=self.gamma, bias=self.beta
-        )
 
 
 class AttentionBase(nn.Module):
@@ -264,30 +270,70 @@ class AttentionBase(nn.Module):
         )
         self.to_out = nn.Sequential(
             nn.Linear(in_features=mid_features, out_features=features, bias=False),
-            CenteredLayerNorm(features=features),
+            LayerNorm(features=features, bias=False),
         )
 
     def forward(
-        self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor = None, attention_bias=None
+        self,
+        q: Tensor,
+        k: Tensor,
+        v: Tensor,
+        mask: Tensor = None,
+        attention_bias: Tensor = None,
     ) -> Tensor:
 
-        # Split heads, scale queries, insert null tokens
+        # Split heads, scale queries
         q, k, v = rearrange_many((q, k, v), "b n (h d) -> b h n d", h=self.num_heads)
         q = q * self.scale
-        k, v = self.insert_null_tokens(k, v) if self.use_null_tokens else (k, v)
 
-        # Compute similarity matrix
-        sim = einsum("b h i d, b h j d -> b h i j", q, k)
+        # Insert null tokens
+        if self.use_null_tokens:
+            k, v, mask = self.insert_null_tokens(k, v, mask)
+
+        # Compute similarity matrix with bias and mask
+        sim = einsum("... n d, ... m d -> ... n m", q, k)
         sim = sim + attention_bias if exists(attention_bias) else sim
         sim = attention_mask(sim, mask) if exists(mask) else sim
 
-        # Attend with stable softmax
+        # Get attention matrix with softmax
         attn = sim.softmax(dim=-1, dtype=torch.float32)
 
         # Compute values
-        out = einsum("b h i j, b h j d -> b h i d", attn, v)
+        out = einsum("... n j, ... j d -> ... n d", attn, v)
         out = rearrange(out, "b h n d -> b n (h d)")
         return self.to_out(out)
+
+
+class Attention(nn.Module):
+    def __init__(
+        self,
+        features: int,
+        *,
+        head_features: int = 64,
+        num_heads: int = 8,
+    ):
+        super().__init__()
+        mid_features = head_features * num_heads
+
+        self.norm = LayerNorm(features, bias=False)
+        self.to_q = nn.Linear(
+            in_features=features, out_features=mid_features, bias=False
+        )
+        self.to_kv = nn.Linear(
+            in_features=features, out_features=mid_features * 2, bias=False
+        )
+        self.attention = AttentionBase(
+            features,
+            num_heads=num_heads,
+            head_features=head_features,
+            use_null_tokens=False,
+        )
+
+    def forward(self, x: Tensor, mask: Tensor = None) -> Tensor:
+        x = self.norm(x)
+        q, k, v = (self.to_q(x), *self.to_kv(x).chunk(2, dim=-1))
+        x = self.attention(q, k, v, mask=mask)
+        return x
 
 
 class CrossAttention(nn.Module):
@@ -300,12 +346,12 @@ class CrossAttention(nn.Module):
         num_heads: int = 8,
     ):
         super().__init__()
-        self.scale = head_features ** -0.5
-        self.num_heads = num_heads
         mid_features = head_features * num_heads
         context_features = default(context_features, features)
 
-        self.norm = CenteredLayerNorm(features=features)
+        self.norm_in = LayerNorm(features=features, bias=False)
+        self.norm_context = LayerNorm(features=features, bias=False)
+
         self.to_q = nn.Linear(
             in_features=features, out_features=mid_features, bias=False
         )
@@ -321,30 +367,89 @@ class CrossAttention(nn.Module):
 
     def forward(self, x: Tensor, context: Tensor, mask: Tensor = None) -> Tensor:
         b, n, d = x.shape
-        x = self.norm(x)
+        x = self.norm_in(x)
+        context = self.norm_context(context)
         # Queries form x, k and v from context
         q, k, v = (self.to_q(x), *self.to_kv(context).chunk(2, dim=-1))
-        x = self.attention(q, k, v, mask)
+        x = self.attention(q, k, v, mask=mask)
         return x
 
 
-class Attention(CrossAttention):
-    def forward(self, x: Tensor, *args, **kwargs) -> Tensor:
-        return super().forward(x, context=x, *args, **kwargs)
+def crop_or_pad_tokens(tokens: Tensor, num_tokens: int, pad_value: Any = 0) -> Tensor:
+    b, n, d = tokens.shape
+    tokens = tokens[:, :num_tokens]
+    if n < num_tokens:
+        tokens = F.pad(tokens, (0, 0, 0, num_tokens - n), value=pad_value)
+    return tokens
+
+
+class PerceiverAttention(nn.Module):
+    """https://arxiv.org/pdf/2103.03206.pdf"""
+
+    def __init__(
+        self,
+        features: int,
+        *,
+        head_features: int = 64,
+        num_heads: int = 8,
+    ):
+        super().__init__()
+        self.scale = head_features ** -0.5
+        self.num_heads = num_heads
+        mid_features = head_features * num_heads
+
+        self.norm_in = nn.LayerNorm(features)
+        self.norm_byte = nn.LayerNorm(features)
+
+        self.to_q = nn.Linear(
+            in_features=features, out_features=mid_features, bias=False
+        )
+
+        self.to_kv = nn.Linear(
+            in_features=features, out_features=mid_features * 2, bias=False
+        )
+
+        self.attention = AttentionBase(
+            features,
+            num_heads=num_heads,
+            head_features=head_features,
+            use_null_tokens=True,
+        )
+
+    def forward(self, x: Tensor, byte: Tensor, mask: Tensor = None):
+        n = x.shape[-2]
+        x = self.norm_in(x)  # latents
+        byte = self.norm_byte(byte)
+        context = torch.cat([x, byte], dim=-2)
+        q, k, v = (self.to_q(x), *self.to_kv(context).chunk(2, dim=-1))
+        mask = F.pad(mask, pad=(0, n), value=True)
+        x = self.attention(q, k, v, mask=mask)
+        return x
+
+
+def FeedForward(features: int, multiplier: int = 2):
+    mid_features = int(features * multiplier)
+    return nn.Sequential(
+        LayerNorm(features, bias=False),
+        nn.Linear(in_features=features, out_features=mid_features, bias=False),
+        nn.GELU(),
+        LayerNorm(features, bias=False),
+        nn.Linear(in_features=mid_features, out_features=features, bias=False),
+    )
 
 
 class LayerNorm1d(nn.Module):
     def __init__(self, channels: int, *, bias: bool = True, eps: float = 1e-5):
         super().__init__()
-        self.eps = eps
         self.bias = bias
+        self.eps = eps
         self.g = nn.Parameter(torch.ones(1, channels, 1))
         self.b = nn.Parameter(torch.zeros(1, channels, 1)) if bias else None
 
     def forward(self, x: Tensor) -> Tensor:
         var = torch.var(x, dim=1, unbiased=False, keepdim=True)
         mean = torch.mean(x, dim=1, keepdim=True)
-        norm = (x - mean) / (var + self.eps).sqrt() * self.g
+        norm = (x - mean) * (var + self.eps).rsqrt() * self.g
         return norm + self.b if self.bias else norm
 
 
