@@ -22,20 +22,22 @@ from audio_diffusion_pytorch import UNet1d
 # Construct denoising function
 unet = UNet1d(
     in_channels=1,
+    patch_size=8,
     channels=128,
     multipliers=[1, 2, 4, 4, 4, 4, 4],
-    factors=[4, 4, 4, 4, 2, 2],
-    attentions=[False, False, False, False, True, True],
+    factors=[4, 4, 4, 2, 2, 2],
+    attentions=[False, False, False, True, True, True],
     attention_heads=8,
     attention_features=64,
     attention_multiplier=2,
-    dilations=[[1, 1, 1], [1, 1, 1], [1, 1, 1], [1, 1, 1], [1, 1, 1], [1, 1, 1]],
+    dilations=[[1, 1], [1, 1], [1, 1], [1, 1], [1, 1], [1, 1]],
     resnet_groups=8,
     kernel_multiplier_downsample=2,
     kernel_sizes_init=[1, 3, 7],
     use_nearest_upsample=False,
     use_skip_scale=True,
     use_attention_bottleneck=True,
+    use_learned_time_embedding=True
 )
 
 x = torch.randn(3, 1, 2 ** 15)
@@ -43,7 +45,40 @@ t = torch.tensor([40, 10, 20])
 y = unet(x, t) # [3, 1, 32768], 3 audio tracks of ~1.6s sampled at 20050 Hz
 ```
 
-### Diffusion
+### Elucidated Diffusion
+
+```python
+from audio_diffusion_pytorch.diffusion.elucidated import Diffusion, DiffusionSampler, LogNormalSampler, KerrasSchedule
+
+diffusion = Diffusion(
+    net=unet,
+    sigma_sampler=LogNormalSampler(mean = -3.2, std = 1.2),
+    sigma_data=0.07
+)
+x = torch.randn(3, 1, 2 ** 15)
+loss = diffusion(x)
+loss.backward() # Do this many times
+
+
+sampler = DiffusionSampler(
+    diffusion,
+    num_steps=50,
+    sigma_schedule=KerrasSchedule(
+        sigma_min=0.002,
+        sigma_max=1
+    ),
+    s_tmin=0,
+    s_tmax=10,
+    s_churn=40,
+    s_noise=1.003
+)
+y = sampler(x = torch.randn(1,1,2 ** 15))
+
+```
+
+
+### Gaussian Diffusion (Old)
+Note that this requires `use_learned_time_embedding=False` on the `UNet1d`.
 ```py
 from audio_diffusion_pytorch.diffusion.ddpm import Diffusion, DiffusionSampler
 # Build diffusion to train denoise function
@@ -63,38 +98,6 @@ loss.backwards() # Do this many times
 # Sample from diffusion model by converting normal tensor to audio
 sampler = DiffusionSampler(diffusion)
 y = sampler(x = torch.randn(1, 1, 2 ** 15)) # [1, 1, 32768]
-```
-
-### Elucidated Diffusion
-Note that here we use `patch_size=4` and `use_learned_time_embedding=True` for the UNet1d.
-
-```python
-from audio_diffusion_pytorch.diffusion.elucidated import Diffusion, DiffusionSampler, LogNormalSampler, KerrasSchedule
-
-diffusion = Diffusion(
-    net=unet,
-    sigma_sampler=LogNormalSampler(mean = -1.2, std = 1.2),
-    sigma_data=0.07
-)
-x = torch.randn(3, 1, 2 ** 15)
-loss = diffusion(x)
-loss.backward() # Do this many times
-
-
-sampler = DiffusionSampler(
-    diffusion,
-    num_steps=100,
-    sigma_schedule=KerrasSchedule(
-        sigma_min=0.002,
-        sigma_max=2
-    ),
-    s_tmin=0,
-    s_tmax=10,
-    s_churn=40,
-    s_noise=1.003
-)
-y = sampler(x = torch.randn(1,1,2 ** 15))
-
 ```
 
 ## Experiments

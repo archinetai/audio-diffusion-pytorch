@@ -1,5 +1,5 @@
 from math import log, pi
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -897,6 +897,7 @@ class UNet1dAlpha(UNet1d):
     def __init__(self, *args, **kwargs):
         default_kwargs = dict(
             in_channels=1,
+            patch_size=1,
             channels=128,
             multipliers=[1, 2, 4, 4, 4, 4, 4],
             factors=[4, 4, 4, 4, 2, 2],
@@ -919,7 +920,6 @@ class UNet1dAlpha(UNet1d):
             use_skip_scale=True,
             use_attention_bottleneck=True,
             use_learned_time_embedding=True,
-            patch_size=1,
         )
         super().__init__(*args, **{**default_kwargs, **kwargs})
 
@@ -928,11 +928,11 @@ class UNet1dBravo(UNet1d):
     def __init__(self, *args, **kwargs):
         default_kwargs = dict(
             in_channels=1,
-            patch_size=4,
+            patch_size=8,
             channels=128,
             multipliers=[1, 2, 4, 4, 4, 4, 4],
-            factors=[4, 4, 4, 4, 2, 2],
-            attentions=[False, False, False, False, True, True],
+            factors=[4, 4, 4, 2, 2, 2],
+            attentions=[False, False, False, True, True, True],
             attention_heads=8,
             attention_features=64,
             attention_multiplier=2,
