@@ -3,7 +3,7 @@ from typing import Any, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
-from einops import rearrange
+from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many, repeat_many
 from einops_exts.torch import EinopsToAndFrom
@@ -13,11 +13,11 @@ from torch.nn import functional as F
 from .utils import default, exists
 
 
-def Conv1d(*args, **kwargs):
+def Conv1d(*args, **kwargs) -> nn.Module:
     return nn.Conv1d(*args, **kwargs)
 
 
-def ConvTranspose1d(*args, **kwargs):
+def ConvTranspose1d(*args, **kwargs) -> nn.Module:
     return nn.ConvTranspose1d(*args, **kwargs)
 
 
@@ -51,7 +51,9 @@ class LearnedPositionalEmbedding(nn.Module):
         return fouriered
 
 
-def TimePositionalEmbedding(dim: int, out_features: int, use_learned: bool):
+def TimePositionalEmbedding(
+    dim: int, out_features: int, use_learned: bool
+) -> nn.Module:
     return nn.Sequential(
         LearnedPositionalEmbedding(dim)
         if use_learned
@@ -213,7 +215,7 @@ class InsertNullTokens(nn.Module):
         self.tokens = nn.Parameter(torch.randn(2, head_features))
 
     def forward(
-        self, k: Tensor, v: Tensor, mask: Tensor = None
+        self, k: Tensor, v: Tensor, *, mask: Tensor = None
     ) -> Tuple[Tensor, Tensor]:
         b = k.shape[0]
         nk, nv = repeat_many(
@@ -221,7 +223,7 @@ class InsertNullTokens(nn.Module):
         )
         k = torch.cat((nk, k), dim=-2)
         v = torch.cat((nv, v), dim=-2)
-        mask = F.pad(mask, pad=(1, 0), value=True)
+        mask = F.pad(mask, pad=(1, 0), value=True) if exists(mask) else None
         return k, v, mask
 
 
@@ -238,6 +240,17 @@ class LayerNorm(nn.Module):
         mean = torch.mean(x, dim=-1, keepdim=True)
         norm = (x - mean) * (var + self.eps).rsqrt() * self.g
         return norm + self.b if self.bias else norm
+
+
+def FeedForward(features: int, multiplier: int = 2) -> nn.Module:
+    mid_features = int(features * multiplier)
+    return nn.Sequential(
+        LayerNorm(features, bias=False),
+        nn.Linear(in_features=features, out_features=mid_features, bias=False),
+        nn.GELU(),
+        LayerNorm(mid_features, bias=False),
+        nn.Linear(in_features=mid_features, out_features=features, bias=False),
+    )
 
 
 def attention_mask(
@@ -278,6 +291,7 @@ class AttentionBase(nn.Module):
         q: Tensor,
         k: Tensor,
         v: Tensor,
+        *,
         mask: Tensor = None,
         attention_bias: Tensor = None,
     ) -> Tensor:
@@ -288,7 +302,7 @@ class AttentionBase(nn.Module):
 
         # Insert null tokens
         if self.use_null_tokens:
-            k, v, mask = self.insert_null_tokens(k, v, mask)
+            k, v, mask = self.insert_null_tokens(k, v, mask=mask)
 
         # Compute similarity matrix with bias and mask
         sim = einsum("... n d, ... m d -> ... n m", q, k)
@@ -375,14 +389,6 @@ class CrossAttention(nn.Module):
         return x
 
 
-def crop_or_pad_tokens(tokens: Tensor, num_tokens: int, pad_value: Any = 0) -> Tensor:
-    b, n, d = tokens.shape
-    tokens = tokens[:, :num_tokens]
-    if n < num_tokens:
-        tokens = F.pad(tokens, (0, 0, 0, num_tokens - n), value=pad_value)
-    return tokens
-
-
 class PerceiverAttention(nn.Module):
     """https://arxiv.org/pdf/2103.03206.pdf"""
 
@@ -416,26 +422,224 @@ class PerceiverAttention(nn.Module):
             use_null_tokens=True,
         )
 
-    def forward(self, x: Tensor, byte: Tensor, mask: Tensor = None):
+    def forward(self, x: Tensor, byte: Tensor, *, mask: Tensor = None) -> Tensor:
         n = x.shape[-2]
         x = self.norm_in(x)  # latents
         byte = self.norm_byte(byte)
         context = torch.cat([x, byte], dim=-2)
         q, k, v = (self.to_q(x), *self.to_kv(context).chunk(2, dim=-1))
-        mask = F.pad(mask, pad=(0, n), value=True)
+        mask = F.pad(mask, pad=(0, n), value=True) if exists(mask) else None
         x = self.attention(q, k, v, mask=mask)
         return x
 
 
-def FeedForward(features: int, multiplier: int = 2):
-    mid_features = int(features * multiplier)
-    return nn.Sequential(
-        LayerNorm(features, bias=False),
-        nn.Linear(in_features=features, out_features=mid_features, bias=False),
-        nn.GELU(),
-        LayerNorm(features, bias=False),
-        nn.Linear(in_features=mid_features, out_features=features, bias=False),
-    )
+class PerceiverTransformerBlock(nn.Module):
+    def __init__(
+        self,
+        features: int,
+        *,
+        head_features: int = 64,
+        num_heads: int = 8,
+        multiplier: int = 2,
+    ):
+        super().__init__()
+
+        self.attention = PerceiverAttention(
+            features=features, head_features=head_features, num_heads=num_heads
+        )
+
+        self.feed_forward = FeedForward(features=features, multiplier=multiplier)
+
+    def forward(self, x: Tensor, byte: Tensor, *, mask: Tensor = None) -> Tensor:
+        x = self.attention(x, byte, mask=mask) + x
+        x = self.feed_forward(x) + x
+        return x
+
+
+class PerceiverTransformer(nn.Module):
+    def __init__(
+        self,
+        *,
+        features: int,
+        num_blocks: int,
+        head_features: int = 64,
+        num_heads: int = 8,
+        multiplier: int = 4,
+    ):
+        super().__init__()
+
+        self.blocks = nn.ModuleList(
+            [
+                PerceiverTransformerBlock(
+                    features=features,
+                    head_features=head_features,
+                    num_heads=num_heads,
+                    multiplier=multiplier,
+                )
+                for i in range(num_blocks)
+            ]
+        )
+
+    def forward(self, x: Tensor, byte: Tensor, *, mask: Tensor = None) -> Tensor:
+        for block in self.blocks:
+            x = block(x, byte, mask=mask)
+        return x
+
+
+class MeanPooler(nn.Module):
+    def __init__(self, features: int, *, num_tokens: int):
+        super().__init__()
+
+        self.to_tokens = nn.Sequential(
+            LayerNorm(features=features, bias=False),
+            nn.Linear(in_features=features, out_features=features * num_tokens),
+            Rearrange("b (n d) -> b n d", n=num_tokens),
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        mean_token = reduce(x, "b n d -> b d", "mean")
+        tokens = self.to_tokens(mean_token)
+        return tokens
+
+
+class PerceiverResampler(nn.Module):
+    def __init__(
+        self,
+        *,
+        features: int,
+        num_latents: int,
+        num_pooled: int,
+        num_tokens: int,
+        num_blocks: int,
+        attention_head_features: int = 64,
+        attention_num_heads: int = 8,
+        attention_multiplier: int = 4,
+    ):
+        super().__init__()
+
+        self.positional_embedding = nn.Parameter(torch.randn(1, num_tokens, features))
+
+        self.latent_tokens = nn.Parameter(torch.randn(num_latents, features))
+
+        self.to_mean_pooled = MeanPooler(features=features, num_tokens=num_pooled)
+
+        self.transformer = PerceiverTransformer(
+            features=features,
+            num_blocks=num_blocks,
+            head_features=attention_head_features,
+            num_heads=attention_num_heads,
+            multiplier=attention_multiplier,
+        )
+
+    def forward(self, tokens: Tensor, *, mask: Tensor = None) -> Tensor:
+        b, n, d = tokens.shape
+        # Add positional embedding to tokens
+        tokens = tokens + self.positional_embedding
+        # Repeat latent tokens over all batch elements
+        latent_tokens = repeat(self.latent_tokens, "l d -> b l d", b=b)
+        # Concat mean pooled tokens to latent tokens
+        latent_tokens = torch.cat((self.to_mean_pooled(tokens), latent_tokens), dim=-2)
+        # Resample tokens with transformer (returns num_latent+num_pooled tokens)
+        return self.transformer(latent_tokens, tokens, mask=mask)
+
+
+def rand_bool(shape: torch.Size, proba: float, device: Any = None):
+    if proba == 1:
+        return torch.ones(shape, device=device, dtype=torch.bool)
+    elif proba == 0:
+        return torch.zeros(shape, device=device, dtype=torch.bool)
+    else:
+        return torch.bernoulli(torch.full(shape, proba, device=device)).to(torch.bool)
+
+
+class LearnedRandomMasker(nn.Module):
+    """Masks random batches and masked tokens with fixed leared tokens."""
+
+    def __init__(
+        self,
+        features: int,
+        num_tokens: int,
+    ):
+        super().__init__()
+        self.fixed_tokens = nn.Parameter(torch.randn(1, num_tokens, features))
+
+    def forward(
+        self, tokens: Tensor, proba_keep_batch: float, *, mask: Tensor = None
+    ) -> Tensor:
+        b, device = tokens.shape[0], tokens.device
+        batch_mask = rand_bool(shape=(b, 1, 1), proba=proba_keep_batch, device=device)
+        full_mask = batch_mask
+        if exists(mask):
+            full_mask = batch_mask & rearrange(mask, "b n -> b n 1")
+        return torch.where(full_mask, tokens, self.fixed_tokens)
+
+
+def crop_or_pad_tokens(tokens: Tensor, num_tokens: int, pad_value: Any = 0) -> Tensor:
+    b, n = tokens.shape[0], tokens.shape[1]
+    tokens = tokens[:, :num_tokens]
+    if n < num_tokens:
+        tokens = F.pad(tokens, (0, 0, 0, num_tokens - n), value=pad_value)
+    return tokens
+
+
+class TokenConditiner(nn.Module):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        num_tokens: int,
+        use_resampler: bool,
+        resampling_num_latents: Optional[int] = None,
+        resampling_num_pooled: Optional[int] = None,
+        resampling_num_blocks: Optional[int] = None,
+    ) -> None:
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.num_tokens = num_tokens
+        self.use_resampler = use_resampler
+
+        self.to_cond = nn.Linear(in_features=in_features, out_features=out_features)
+
+        self.resample = (
+            PerceiverResampler(
+                features=out_features,
+                num_latents=resampling_num_latents,
+                num_pooled=resampling_num_pooled,
+                num_tokens=num_tokens,
+                num_blocks=resampling_num_blocks,
+            )
+            if use_resampler
+            else None
+        )
+
+        self.to_mask = LearnedRandomMasker(features=out_features, num_tokens=num_tokens)
+
+    def forward(
+        self,
+        tokens: Tensor,
+        *,
+        mask: Optional[Tensor] = None,
+        proba_mask_batch: float = 0.0,
+    ) -> Tensor:
+        b, n, d = tokens.shape
+        assert d == self.in_features
+
+        cond_tokens = self.to_cond(tokens)  # (b, n, out_features)
+        cond_tokens = crop_or_pad_tokens(cond_tokens, num_tokens=self.num_tokens)
+
+        if exists(mask):
+            # mask = rearrange(mask, 'b n -> b n 1')
+            mask = crop_or_pad_tokens(mask, num_tokens=self.num_tokens, pad_value=False)
+
+        cond_tokens = self.to_mask(
+            cond_tokens, mask=mask, proba_keep_batch=1 - proba_mask_batch
+        )
+
+        if self.use_resampler:
+            cond_tokens = self.resample(cond_tokens, mask=mask)
+
+        return cond_tokens
 
 
 class LayerNorm1d(nn.Module):
