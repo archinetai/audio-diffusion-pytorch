@@ -1,5 +1,5 @@
 from math import sqrt
-from typing import Any
+from typing import Any, Optional
 
 import torch
 import torch.nn as nn
@@ -13,7 +13,7 @@ from ..utils import default, exists
 
 
 class SigmaSampler:
-    def __call__(self, num_samples: int, device: str):
+    def __call__(self, num_samples: int, device: torch.device):
         raise NotImplementedError()
 
 
@@ -22,7 +22,9 @@ class LogNormalSampler(SigmaSampler):
         self.mean = mean
         self.std = std
 
-    def __call__(self, num_samples, device: Any = "cpu"):
+    def __call__(
+        self, num_samples, device: torch.device = torch.device("cpu")
+    ) -> Tensor:
         normal = self.mean + self.std * torch.randn((num_samples,), device=device)
         return normal.exp()
 
@@ -30,7 +32,7 @@ class LogNormalSampler(SigmaSampler):
 class SigmaSchedule(nn.Module):
     """Interface used by different sampling sigma schedules"""
 
-    def forward(self, num_steps: int, device: Any) -> Tensor:
+    def forward(self, num_steps: int, device: torch.device) -> Tensor:
         raise NotImplementedError()
 
 
@@ -86,19 +88,19 @@ class Diffusion(nn.Module):
     def denoise_fn(
         self,
         x_noisy: Tensor,
-        sigmas: Tensor = None,
-        sigma: float = None,
+        sigmas: Optional[Tensor] = None,
+        sigma: Optional[float] = None,
         clamp: bool = False,
     ) -> Tensor:
         batch, device = x_noisy.shape[0], x_noisy.device
 
-        assert exists(sigmas) or exists(
-            sigma
-        ), "Either sigmas or sigma must be provided"
+        assert exists(sigmas) ^ exists(sigma), "Either sigmas or sigma must be provided"
 
         # If sigma provided use the same for all batch items (used for sampling)
         if exists(sigma):
             sigmas = torch.full(size=(batch,), fill_value=sigma).to(device)
+
+        assert exists(sigmas)
 
         sigmas_padded = rearrange(sigmas, "b -> b 1 1")
 
@@ -162,9 +164,9 @@ class DiffusionSampler(nn.Module):
     def step(
         self,
         x: Tensor,
-        sigma: Tensor,
-        sigma_next: Tensor,
-        gamma: Tensor,
+        sigma: float,
+        sigma_next: float,
+        gamma: float,
         clamp: bool = True,
     ):
         """Algorithm 2 (step)"""
@@ -184,6 +186,7 @@ class DiffusionSampler(nn.Module):
             x_next = x_hat + 0.5 * (sigma - sigma_hat) * (d + d_prime)
         return x_next
 
+    @torch.no_grad()
     def forward(self, x: Tensor, num_steps: int = None) -> Tensor:
         device = x.device
         num_steps = default(num_steps, self.num_steps)
@@ -199,7 +202,7 @@ class DiffusionSampler(nn.Module):
         )
         # Denoise x
         for i in range(num_steps - 1):
-            x = self.step(x, sigma=sigmas[i], sigma_next=sigmas[i + 1], gamma=gammas[i])
+            x = self.step(x, sigma=sigmas[i], sigma_next=sigmas[i + 1], gamma=gammas[i])  # type: ignore # noqa
 
         x = x.clamp(-1.0, 1.0)
         return x

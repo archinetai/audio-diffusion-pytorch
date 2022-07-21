@@ -45,11 +45,11 @@ class Diffusion(nn.Module):
         betas = cosine_beta_schedule(timesteps=num_timesteps)
         self.register("betas", betas)
         alphas = 1.0 - betas
-        self.alphas = alphas  # types fix
         self.register("alphas", alphas)
+        self.alphas = alphas  # typing fix
         alphas_cumprod = torch.cumprod(alphas, dim=0)
-        self.alphas_cumprod = alphas_cumprod  # types fix
         self.register("alphas_cumprod", alphas_cumprod)
+        self.alphas_cumprod = alphas_cumprod  # typing fix
         sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
         self.register("sqrt_alphas_cumprod", sqrt_alphas_cumprod)
         sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - alphas_cumprod)

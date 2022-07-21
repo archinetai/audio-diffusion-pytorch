@@ -28,10 +28,10 @@ class SinusoidalPositionalEmbedding(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         half_dim = self.dim // 2
-        emb = log(10000) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device=x.device) * -emb)
-        emb = rearrange(x, "i -> i 1") * rearrange(emb, "j -> 1 j")
-        return torch.cat((emb.sin(), emb.cos()), dim=-1)
+        factor = log(10000) / (half_dim - 1)
+        embedding = torch.exp(torch.arange(half_dim, device=x.device) * -factor)
+        embedding = rearrange(x, "i -> i 1") * rearrange(embedding, "j -> 1 j")
+        return torch.cat((embedding.sin(), embedding.cos()), dim=-1)
 
 
 class LearnedPositionalEmbedding(nn.Module):
@@ -172,7 +172,7 @@ class ResnetBlock1d(nn.Module):
                 ),
             )
             if exists(time_context_features)
-            else nn.Identity()
+            else None
         )
 
         self.block1 = ConvBlock1d(
@@ -216,7 +216,7 @@ class InsertNullTokens(nn.Module):
 
     def forward(
         self, k: Tensor, v: Tensor, *, mask: Tensor = None
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
         b = k.shape[0]
         nk, nv = repeat_many(
             self.tokens.unbind(dim=-2), "d -> b h 1 d", h=self.num_heads, b=b
@@ -292,8 +292,8 @@ class AttentionBase(nn.Module):
         k: Tensor,
         v: Tensor,
         *,
-        mask: Tensor = None,
-        attention_bias: Tensor = None,
+        mask: Optional[Tensor] = None,
+        attention_bias: Optional[Tensor] = None,
     ) -> Tensor:
 
         # Split heads, scale queries
@@ -343,9 +343,9 @@ class Attention(nn.Module):
             use_null_tokens=False,
         )
 
-    def forward(self, x: Tensor, mask: Tensor = None) -> Tensor:
+    def forward(self, x: Tensor, *, mask: Optional[Tensor] = None) -> Tensor:
         x = self.norm(x)
-        q, k, v = (self.to_q(x), *self.to_kv(x).chunk(2, dim=-1))
+        q, k, v = (self.to_q(x), *torch.chunk(self.to_kv(x), chunks=2, dim=-1))
         x = self.attention(q, k, v, mask=mask)
         return x
 
@@ -384,7 +384,7 @@ class CrossAttention(nn.Module):
         x = self.norm_in(x)
         context = self.norm_context(context)
         # Queries form x, k and v from context
-        q, k, v = (self.to_q(x), *self.to_kv(context).chunk(2, dim=-1))
+        q, k, v = (self.to_q(x), *torch.chunk(self.to_kv(context), chunks=2, dim=-1))
         x = self.attention(q, k, v, mask=mask)
         return x
 
@@ -427,7 +427,7 @@ class PerceiverAttention(nn.Module):
         x = self.norm_in(x)  # latents
         byte = self.norm_byte(byte)
         context = torch.cat([x, byte], dim=-2)
-        q, k, v = (self.to_q(x), *self.to_kv(context).chunk(2, dim=-1))
+        q, k, v = (self.to_q(x), *torch.chunk(self.to_kv(context), chunks=2, dim=-1))
         mask = F.pad(mask, pad=(0, n), value=True) if exists(mask) else None
         x = self.attention(q, k, v, mask=mask)
         return x
@@ -543,7 +543,7 @@ class PerceiverResampler(nn.Module):
         return self.transformer(latent_tokens, tokens, mask=mask)
 
 
-def rand_bool(shape: torch.Size, proba: float, device: Any = None):
+def rand_bool(shape: Any, proba: float, device: Any = None) -> Tensor:
     if proba == 1:
         return torch.ones(shape, device=device, dtype=torch.bool)
     elif proba == 0:
@@ -575,7 +575,7 @@ class LearnedRandomMasker(nn.Module):
 
 
 def crop_or_pad_tokens(tokens: Tensor, num_tokens: int, pad_value: Any = 0) -> Tensor:
-    b, n = tokens.shape[0], tokens.shape[1]
+    n = tokens.shape[1]
     tokens = tokens[:, :num_tokens]
     if n < num_tokens:
         tokens = F.pad(tokens, (0, 0, 0, num_tokens - n), value=pad_value)
@@ -601,17 +601,20 @@ class TokenConditiner(nn.Module):
 
         self.to_cond = nn.Linear(in_features=in_features, out_features=out_features)
 
-        self.resample = (
-            PerceiverResampler(
+        if use_resampler:
+            assert (
+                exists(resampling_num_latents)
+                and exists(resampling_num_pooled)
+                and resampling_num_blocks
+            )
+
+            self.resample = PerceiverResampler(
                 features=out_features,
                 num_latents=resampling_num_latents,
                 num_pooled=resampling_num_pooled,
                 num_tokens=num_tokens,
                 num_blocks=resampling_num_blocks,
             )
-            if use_resampler
-            else None
-        )
 
         self.to_mask = LearnedRandomMasker(features=out_features, num_tokens=num_tokens)
 
@@ -752,12 +755,6 @@ class DownsampleBlock1d(nn.Module):
     ):
         super().__init__()
 
-        assert (not use_attention) or (
-            exists(attention_heads)
-            and exists(attention_features)
-            and exists(attention_multiplier)
-        )
-
         self.use_pre_downsample = use_pre_downsample
         self.use_attention = use_attention
 
@@ -776,16 +773,18 @@ class DownsampleBlock1d(nn.Module):
             ]
         )
 
-        self.transformer = (
-            TransformerBlock1d(
+        if use_attention:
+            assert (
+                exists(attention_heads)
+                and exists(attention_features)
+                and exists(attention_multiplier)
+            )
+            self.transformer = TransformerBlock1d(
                 channels=channels,
                 num_heads=attention_heads,
                 head_features=attention_features,
                 multiplier=attention_multiplier,
             )
-            if use_attention
-            else nn.Identity()
-        )
 
         self.downsample = Downsample1d(
             in_channels=in_channels,
@@ -822,7 +821,7 @@ class UpsampleBlock1d(nn.Module):
         out_channels: int,
         *,
         factor: int,
-        use_nearest: int,
+        use_nearest: bool,
         dilations: Sequence[int],
         time_context_features: int,
         num_groups: int,
@@ -861,16 +860,18 @@ class UpsampleBlock1d(nn.Module):
             ]
         )
 
-        self.transformer = (
-            TransformerBlock1d(
+        if use_attention:
+            assert (
+                exists(attention_heads)
+                and exists(attention_features)
+                and exists(attention_multiplier)
+            )
+            self.transformer = TransformerBlock1d(
                 channels=channels,
                 num_heads=attention_heads,
                 head_features=attention_features,
                 multiplier=attention_multiplier,
             )
-            if use_attention
-            else nn.Identity()
-        )
 
         self.upsample = Upsample1d(
             in_channels=in_channels,
@@ -882,7 +883,7 @@ class UpsampleBlock1d(nn.Module):
     def add_skip(self, x: Tensor, skip: Tensor) -> Tensor:
         return torch.cat([x, skip * self.skip_scale], dim=1)
 
-    def forward(self, x: Tensor, skips: Sequence[Tensor], t: Tensor) -> Tensor:
+    def forward(self, x: Tensor, skips: List[Tensor], t: Tensor) -> Tensor:
 
         if self.use_pre_upsample:
             x = self.upsample(x)
@@ -926,8 +927,9 @@ class BottleneckBlock1d(nn.Module):
             time_context_features=time_context_features,
         )
 
-        self.attention = (
-            EinopsToAndFrom(
+        if use_attention:
+            assert exists(attention_heads) and exists(attention_features)
+            self.attention = EinopsToAndFrom(
                 "b c l",
                 "b l c",
                 Attention(
@@ -936,9 +938,6 @@ class BottleneckBlock1d(nn.Module):
                     head_features=attention_features,
                 ),
             )
-            if use_attention
-            else nn.Identity()
-        )
 
         self.post_block = ResnetBlock1d(
             in_channels=channels,
@@ -949,7 +948,8 @@ class BottleneckBlock1d(nn.Module):
 
     def forward(self, x: Tensor, t: Tensor) -> Tensor:
         x = self.pre_block(x, t)
-        x = self.attention(x)
+        if self.use_attention:
+            x = self.attention(x)
         x = self.post_block(x, t)
         return x
 
@@ -970,7 +970,7 @@ class UNet1d(nn.Module):
         kernel_multiplier_downsample: int,
         kernel_sizes_init: Sequence[int],
         use_learned_time_embedding: bool,
-        use_nearest_upsample: int,
+        use_nearest_upsample: bool,
         use_skip_scale: bool,
         use_attention_bottleneck: bool,
         out_channels: Optional[int] = None,
