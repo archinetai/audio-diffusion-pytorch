@@ -1,5 +1,5 @@
 from math import pi
-from typing import Callable, Tuple
+from typing import Tuple
 
 import torch
 import torch.nn as nn
@@ -10,13 +10,13 @@ from torch import Tensor
 from ..utils import default
 
 
-def extract(a, t, x_shape):
+def extract(a, t, x_shape) -> Tensor:
     b, *_ = t.shape
     out = a.gather(-1, t)
     return out.reshape(b, *((1,) * (len(x_shape) - 1)))
 
 
-def cosine_beta_schedule(timesteps, s=0.008):
+def cosine_beta_schedule(timesteps, s=0.008) -> Tensor:
     """cosine schedule as proposed in https://openreview.net/forum?id=-NEXDKk8gZ"""
     steps = timesteps + 1
     x = torch.linspace(0, timesteps, steps, dtype=torch.float64)
@@ -42,18 +42,22 @@ class Diffusion(nn.Module):
         self.loss_fn = F.l1_loss if loss_fn == "l1" else F.mse_loss
         self.num_timesteps = num_timesteps
 
-        self.register("betas", cosine_beta_schedule(timesteps=num_timesteps))
-        self.register("alphas", 1.0 - self.betas)
-        self.register("alphas_cumprod", torch.cumprod(self.alphas, axis=0))
-        self.register("sqrt_alphas_cumprod", torch.sqrt(self.alphas_cumprod))
-        self.register(
-            "sqrt_one_minus_alphas_cumprod", torch.sqrt(1.0 - self.alphas_cumprod)
-        )
-        self.register(
-            "loss_weight",
-            (loss_weight_k + self.alphas_cumprod / (1 - self.alphas_cumprod))
-            ** -loss_weight_gamma,
-        )
+        betas = cosine_beta_schedule(timesteps=num_timesteps)
+        self.register("betas", betas)
+        alphas = 1.0 - betas
+        self.alphas = alphas  # types fix
+        self.register("alphas", alphas)
+        alphas_cumprod = torch.cumprod(alphas, dim=0)
+        self.alphas_cumprod = alphas_cumprod  # types fix
+        self.register("alphas_cumprod", alphas_cumprod)
+        sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
+        self.register("sqrt_alphas_cumprod", sqrt_alphas_cumprod)
+        sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - alphas_cumprod)
+        self.register("sqrt_one_minus_alphas_cumprod", sqrt_one_minus_alphas_cumprod)
+        loss_weight = (
+            loss_weight_k + alphas_cumprod / (1 - alphas_cumprod)
+        ) ** -loss_weight_gamma
+        self.register("loss_weight", loss_weight)
 
     def register(self, name: str, tensor: Tensor):
         self.register_buffer(name, tensor.to(torch.float32), persistent=False)
@@ -66,7 +70,10 @@ class Diffusion(nn.Module):
         )
 
     def forward(self, x_0: Tensor, noise: Tensor = None):
-        """Addes t steps of noise to x_0 and denoises one step using denoise_fn, returns the loss."""
+        """
+        Adds t steps of noise to x_0 and denoises one step using denoise_fn, and
+        returns the loss.
+        """
         b, device = x_0.shape[0], x_0.device
         # Number of noise steps for each batch item
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
@@ -94,30 +101,27 @@ class DiffusionSampler(nn.Module):
         alphas_cumprod = diffusion.alphas_cumprod
         alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], pad=(1, 0), value=1.0)
 
-        self.register("sqrt_recip_alphas_cumprod", torch.sqrt(1.0 / alphas_cumprod))
-        self.register(
-            "sqrt_recipm1_alphas_cumprod", torch.sqrt(1.0 / alphas_cumprod - 1)
-        )
-
+        sqrt_recip_alphas_cumprod = torch.sqrt(1.0 / alphas_cumprod)
+        self.register("sqrt_recip_alphas_cumprod", sqrt_recip_alphas_cumprod)
+        sqrt_recipm1_alphas_cumprod = torch.sqrt(1.0 / alphas_cumprod - 1)
+        self.register("sqrt_recipm1_alphas_cumprod", sqrt_recipm1_alphas_cumprod)
         # calculations for posterior q(x_{t-1} | x_t, x_0)
         posterior_variance = (
             betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
         )
         # above: equal to 1. / (1. / (1. - alpha_cumprod_tm1) + alpha_t / beta_t)
         self.register("posterior_variance", posterior_variance)
-        # below: log calculation clipped because the posterior variance is 0 at the beginning of the diffusion chain
-        self.register(
-            "posterior_log_variance_clipped",
-            torch.log(posterior_variance.clamp(min=1e-20)),
+        # clipped because the posterior variance is 0 at the beginning of diffusion
+        posterior_log_variance_clipped = torch.log(posterior_variance.clamp(min=1e-20))
+        self.register("posterior_log_variance_clipped", posterior_log_variance_clipped)
+        posterior_mean_coef1 = (
+            betas * torch.sqrt(alphas_cumprod_prev) / (1.0 - alphas_cumprod)
         )
-        self.register(
-            "posterior_mean_coef1",
-            betas * torch.sqrt(alphas_cumprod_prev) / (1.0 - alphas_cumprod),
+        self.register("posterior_mean_coef1", posterior_mean_coef1)
+        posterior_mean_coef2 = (
+            (1.0 - alphas_cumprod_prev) * torch.sqrt(alphas) / (1.0 - alphas_cumprod)
         )
-        self.register(
-            "posterior_mean_coef2",
-            (1.0 - alphas_cumprod_prev) * torch.sqrt(alphas) / (1.0 - alphas_cumprod),
-        )
+        self.register("posterior_mean_coef2", posterior_mean_coef2)
 
     def register(self, name: str, tensor: Tensor):
         self.register_buffer(name, tensor.to(torch.float32), persistent=False)
