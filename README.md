@@ -123,8 +123,17 @@ DDPM
 Author = {Jonathan Ho and Ajay Jain and Pieter Abbeel},
 Title = {Denoising Diffusion Probabilistic Models},
 Year = {2020},
-Month = {6},
 Eprint = {arXiv:2006.11239},
+}
+```
+
+Diffusion inpainting
+```bibtex
+@misc{2201.09865,
+Author = {Andreas Lugmayr and Martin Danelljan and Andres Romero and Fisher Yu and Radu Timofte and Luc Van Gool},
+Title = {RePaint: Inpainting using Denoising Diffusion Probabilistic Models},
+Year = {2022},
+Eprint = {arXiv:2201.09865},
 }
 ```
 
@@ -134,7 +143,6 @@ Diffusion cosine schedule
 Author = {Alex Nichol and Prafulla Dhariwal},
 Title = {Improved Denoising Diffusion Probabilistic Models},
 Year = {2021},
-Month = {2},
 Eprint = {arXiv:2102.09672},
 }
 ```
@@ -145,7 +153,6 @@ Diffusion weighted loss
 Author = {Jooyoung Choi and Jungbeom Lee and Chaehun Shin and Sungwon Kim and Hyunwoo Kim and Sungroh Yoon},
 Title = {Perception Prioritized Training of Diffusion Models},
 Year = {2022},
-Month = {4},
 Eprint = {arXiv:2204.00227},
 }
 ```
@@ -156,7 +163,6 @@ Improved UNet architecture
 Author = {Chitwan Saharia and William Chan and Saurabh Saxena and Lala Li and Jay Whang and Emily Denton and Seyed Kamyar Seyed Ghasemipour and Burcu Karagol Ayan and S. Sara Mahdavi and Rapha Gontijo Lopes and Tim Salimans and Jonathan Ho and David J Fleet and Mohammad Norouzi},
 Title = {Photorealistic Text-to-Image Diffusion Models with Deep Language Understanding},
 Year = {2022},
-Month = {5},
 Eprint = {arXiv:2205.11487},
 }
 ```
@@ -167,7 +173,6 @@ Elucidated diffusion
 Author = {Tero Karras and Miika Aittala and Timo Aila and Samuli Laine},
 Title = {Elucidating the Design Space of Diffusion-Based Generative Models},
 Year = {2022},
-Month = {6},
 Eprint = {arXiv:2206.00364},
 }
 ```
