@@ -298,3 +298,40 @@ class DiffusionInpainter(nn.Module):
         # Make sure inpainting are is same as input
         x = x * ~inpaint_mask + inpaint * inpaint_mask
         return x
+
+
+def sequential_mask(like: Tensor, start: int) -> Tensor:
+    length, device = like.shape[2], like.device
+    mask = torch.ones_like(like, dtype=torch.bool)
+    mask[:, :, start:] = torch.zeros((length - start,), device=device)
+    return mask
+
+
+class SpanBySpanComposer(nn.Module):
+    def __init__(
+        self,
+        inpainter: DiffusionInpainter,
+        *,
+        num_spans: int,
+    ):
+        super().__init__()
+        self.inpainter = inpainter
+        self.num_spans = num_spans
+
+    def forward(self, start: Tensor, keep_start: bool = False) -> Tensor:
+        half_length = start.shape[2] // 2
+
+        spans = [start[:, :, :half_length]] if keep_start else []
+        inpaint = start
+        inpaint_mask = sequential_mask(like=start, start=half_length)
+
+        for i in range(self.num_spans):
+            # Inpaint second half
+            span = self.inpainter(inpaint=inpaint, inpaint_mask=inpaint_mask)
+            # Replace first half with generated second half
+            second_half = span[:, :, half_length:]
+            inpaint[:, :, :half_length] = second_half
+            # Save generated span
+            spans.append(second_half)
+
+        return torch.cat(spans, dim=2)
