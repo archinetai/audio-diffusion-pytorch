@@ -128,7 +128,7 @@ class Diffusion(nn.Module):
         noise = default(noise, lambda: torch.randn_like(x))
         x_noisy = x + sigmas_padded * noise
 
-        # Compute denoised value using
+        # Compute denoised values
         x_denoised = self.denoise_fn(x_noisy, sigmas=sigmas)
 
         # Compute weighted loss
@@ -168,7 +168,7 @@ class DiffusionSampler(nn.Module):
         sigma_next: float,
         gamma: float,
         clamp: bool = True,
-    ):
+    ) -> Tensor:
         """Algorithm 2 (step)"""
         # Select temporarily increased noise level
         sigma_hat = sigma + gamma * sigma
@@ -205,4 +205,96 @@ class DiffusionSampler(nn.Module):
             x = self.step(x, sigma=sigmas[i], sigma_next=sigmas[i + 1], gamma=gammas[i])  # type: ignore # noqa
 
         x = x.clamp(-1.0, 1.0)
+        return x
+
+
+class DiffusionInpainter(nn.Module):
+    """RePaint Inpainting: https://arxiv.org/abs/2201.09865"""
+
+    def __init__(
+        self,
+        diffusion: Diffusion,
+        *,
+        num_steps: int,
+        num_resamples: int,
+        sigma_schedule: SigmaSchedule,
+        s_tmin: float = 0,
+        s_tmax: float = float("inf"),
+        s_churn: float = 0.0,
+        s_noise: float = 1.0,
+    ):
+        super().__init__()
+        self.denoise_fn = diffusion.denoise_fn
+        self.num_steps = num_steps
+        self.num_resamples = num_resamples
+        self.sigma_schedule = sigma_schedule
+        self.s_tmin = s_tmin
+        self.s_tmax = s_tmax
+        self.s_noise = s_noise
+        self.s_churn = s_churn
+
+    def step(
+        self,
+        x: Tensor,
+        *,
+        inpaint: Tensor,
+        inpaint_mask: Tensor,
+        sigma: float,
+        sigma_next: float,
+        gamma: float,
+        renoise: bool,
+        clamp: bool = True,
+    ) -> Tensor:
+        """Algorithm 2 (step)"""
+        # Select temporarily increased noise level
+        sigma_hat = sigma + gamma * sigma
+        # Noise to move from sigma to sigma_hat
+        epsilon = self.s_noise * torch.randn_like(x)
+        noise = sqrt(sigma_hat ** 2 - sigma ** 2) * epsilon
+        # Add increased noise to mixed value
+        x_hat = (x * ~inpaint_mask + inpaint * inpaint_mask) * noise
+        # Evaluate ∂x/∂sigma at sigma_hat
+        d = (x_hat - self.denoise_fn(x_hat, sigma=sigma_hat, clamp=clamp)) / sigma_hat
+        # Take euler step from sigma_hat to sigma_next
+        x_next = x_hat + (sigma_next - sigma_hat) * d
+        # Second order correction
+        if sigma_next != 0:
+            model_out_next = self.denoise_fn(x_next, sigma=sigma_next, clamp=clamp)
+            d_prime = (x_next - model_out_next) / sigma_next
+            x_next = x_hat + 0.5 * (sigma - sigma_hat) * (d + d_prime)
+        # Renoise for next resampling step
+        if renoise:
+            x_next = x_next + (sigma - sigma_next) * torch.randn_like(x_next)
+        return x_next
+
+    @torch.no_grad()
+    def forward(self, inpaint: Tensor, inpaint_mask: Tensor) -> Tensor:
+        device = inpaint.device
+        num_steps, num_resamples = self.num_steps, self.num_resamples
+        # Compute sigmas using schedule
+        sigmas = self.sigma_schedule(num_steps, device)
+        # Sample from first sigma distribution
+        x = sigmas[0] * torch.randn_like(inpaint)
+        # Compute gammas
+        gammas = torch.where(
+            (sigmas >= self.s_tmin) & (sigmas <= self.s_tmax),
+            min(self.s_churn / num_steps, sqrt(2) - 1),
+            0.0,
+        )
+
+        for i in range(num_steps - 1):
+            for r in range(num_resamples):
+                x = self.step(
+                    x=x,
+                    inpaint=inpaint,
+                    inpaint_mask=inpaint_mask,
+                    sigma=sigmas[i],
+                    sigma_next=sigmas[i + 1],
+                    gamma=gammas[i],  # type: ignore # noqa
+                    renoise=i < num_steps - 1 and r < num_resamples,
+                )
+
+        x = x.clamp(-1.0, 1.0)
+        # Make sure inpainting are is same as input
+        x = x * ~inpaint_mask + inpaint * inpaint_mask
         return x
