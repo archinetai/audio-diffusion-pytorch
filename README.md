@@ -42,7 +42,7 @@ unet = UNet1d(
 
 x = torch.randn(3, 1, 2 ** 15)
 t = torch.tensor([40, 10, 20])
-y = unet(x, t) # [3, 1, 32768], 3 audio tracks of ~1.6s sampled at 20050 Hz
+y = unet(x, t) # [3, 1, 32768], 3 audio tracks of ~1.5s sampled at 22050 Hz
 ```
 
 ### Diffusion
