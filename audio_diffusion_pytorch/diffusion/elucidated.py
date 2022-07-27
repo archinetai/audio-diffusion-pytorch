@@ -252,7 +252,7 @@ class DiffusionInpainter(nn.Module):
         epsilon = self.s_noise * torch.randn_like(x)
         noise = sqrt(sigma_hat ** 2 - sigma ** 2) * epsilon
         # Add increased noise to mixed value
-        x_hat = (x * ~inpaint_mask + inpaint * inpaint_mask) * noise
+        x_hat = x * ~inpaint_mask + inpaint * inpaint_mask + noise
         # Evaluate ∂x/∂sigma at sigma_hat
         d = (x_hat - self.denoise_fn(x_hat, sigma=sigma_hat, clamp=clamp)) / sigma_hat
         # Take euler step from sigma_hat to sigma_next
@@ -321,8 +321,10 @@ class SpanBySpanComposer(nn.Module):
     def forward(self, start: Tensor, keep_start: bool = False) -> Tensor:
         half_length = start.shape[2] // 2
 
-        spans = [start[:, :, :half_length]] if keep_start else []
-        inpaint = start
+        spans = list(start.chunk(chunks=2, dim=-1)) if keep_start else []
+        # Inpaint second half from first half
+        inpaint = torch.zeros_like(start)
+        inpaint[:, :, :half_length] = start[:, :, half_length:]
         inpaint_mask = sequential_mask(like=start, start=half_length)
 
         for i in range(self.num_spans):
