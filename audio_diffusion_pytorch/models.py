@@ -158,11 +158,16 @@ class ResnetBlock1d(nn.Module):
         in_channels: int,
         out_channels: int,
         *,
-        dilation: int = 1,
         num_groups: int,
+        dilation: int = 1,
         time_context_features: Optional[int] = None,
+        context_features: Optional[int] = None,
+        context_head_features: Optional[int] = None,
+        context_heads: Optional[int] = None,
     ) -> None:
         super().__init__()
+
+        self.use_context = exists(context_features)
 
         self.to_time_embedding = (
             nn.Sequential(
@@ -182,6 +187,19 @@ class ResnetBlock1d(nn.Module):
             dilation=dilation,
         )
 
+        if self.use_context:
+            assert exists(context_head_features) and exists(context_heads)
+            self.cross_attend = EinopsToAndFrom(
+                "b c l",
+                "b l c",
+                CrossAttention(
+                    features=out_channels,
+                    context_features=context_features,
+                    head_features=context_head_features,
+                    num_heads=context_heads,
+                ),
+            )
+
         self.block2 = ConvBlock1d(
             in_channels=out_channels, out_channels=out_channels, num_groups=num_groups
         )
@@ -192,9 +210,18 @@ class ResnetBlock1d(nn.Module):
             else nn.Identity()
         )
 
-    def forward(self, x: Tensor, time_context: Tensor = None) -> Tensor:
+    def forward(
+        self,
+        x: Tensor,
+        time_context: Optional[Tensor] = None,
+        context: Optional[Tensor] = None,
+    ) -> Tensor:
 
         h = self.block1(x)
+
+        # Cross attend context
+        if self.use_context and exists(context):
+            h = self.cross_attend(h, context=context) + h
 
         # Compute scale and shift from time_context
         scale_shift = None
@@ -364,7 +391,7 @@ class CrossAttention(nn.Module):
         context_features = default(context_features, features)
 
         self.norm_in = LayerNorm(features=features, bias=False)
-        self.norm_context = LayerNorm(features=features, bias=False)
+        self.norm_context = LayerNorm(features=context_features, bias=False)
 
         self.to_q = nn.Linear(
             in_features=features, out_features=mid_features, bias=False
@@ -599,7 +626,7 @@ class TokenConditiner(nn.Module):
         self.num_tokens = num_tokens
         self.use_resampler = use_resampler
 
-        self.to_cond = nn.Linear(in_features=in_features, out_features=out_features)
+        self.to_in = nn.Linear(in_features=in_features, out_features=out_features)
 
         if use_resampler:
             assert (
@@ -628,21 +655,20 @@ class TokenConditiner(nn.Module):
         b, n, d = tokens.shape
         assert d == self.in_features
 
-        cond_tokens = self.to_cond(tokens)  # (b, n, out_features)
-        cond_tokens = crop_or_pad_tokens(cond_tokens, num_tokens=self.num_tokens)
+        tokens = self.to_in(tokens)  # (b, n, out_features)
+        tokens = crop_or_pad_tokens(tokens, num_tokens=self.num_tokens)
 
         if exists(mask):
-            # mask = rearrange(mask, 'b n -> b n 1')
-            mask = crop_or_pad_tokens(mask, num_tokens=self.num_tokens, pad_value=False)
+            mask = rearrange(mask, "b n -> b n 1")
+            mask = crop_or_pad_tokens(mask, num_tokens=self.num_tokens, pad_value=False)  # type: ignore # noqa
+            mask = rearrange(mask, "b m 1 -> b m")
 
-        cond_tokens = self.to_mask(
-            cond_tokens, mask=mask, proba_keep_batch=1 - proba_mask_batch
-        )
+        tokens = self.to_mask(tokens, mask=mask, proba_keep_batch=1 - proba_mask_batch)
 
         if self.use_resampler:
-            cond_tokens = self.resample(cond_tokens, mask=mask)
+            tokens = self.resample(tokens, mask=mask)
 
-        return cond_tokens
+        return tokens
 
 
 class LayerNorm1d(nn.Module):
@@ -744,19 +770,21 @@ class DownsampleBlock1d(nn.Module):
         *,
         factor: int,
         kernel_multiplier: int,
-        dilations: Sequence[int],
         time_context_features: int,
         num_groups: int,
+        num_layers: int,
         use_pre_downsample: bool,
         use_attention: bool,
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
         attention_multiplier: Optional[int] = None,
+        context_features: Optional[int] = None,
     ):
         super().__init__()
 
         self.use_pre_downsample = use_pre_downsample
         self.use_attention = use_attention
+        self.use_context = exists(context_features)
 
         channels = out_channels if use_pre_downsample else in_channels
 
@@ -765,11 +793,13 @@ class DownsampleBlock1d(nn.Module):
                 ResnetBlock1d(
                     in_channels=channels,
                     out_channels=channels,
-                    dilation=dilation,
                     num_groups=num_groups,
                     time_context_features=time_context_features,
+                    context_features=context_features,
+                    context_head_features=attention_features,
+                    context_heads=attention_heads,
                 )
-                for dilation in dilations
+                for _ in range(num_layers)
             ]
         )
 
@@ -793,14 +823,16 @@ class DownsampleBlock1d(nn.Module):
             kernel_multiplier=kernel_multiplier,
         )
 
-    def forward(self, x: Tensor, t: Tensor) -> Tuple[Tensor, List[Tensor]]:
+    def forward(
+        self, x: Tensor, t: Tensor, context: Optional[Tensor] = None
+    ) -> Tuple[Tensor, List[Tensor]]:
 
         if self.use_pre_downsample:
             x = self.downsample(x)
 
         skips = []
         for block in self.blocks:
-            x = block(x, t)
+            x = block(x, t, context if self.use_context else None)
             skips += [x]
 
         if self.use_attention:
@@ -822,7 +854,7 @@ class UpsampleBlock1d(nn.Module):
         *,
         factor: int,
         use_nearest: bool,
-        dilations: Sequence[int],
+        num_layers: int,
         time_context_features: int,
         num_groups: int,
         use_pre_upsample: bool,
@@ -831,6 +863,7 @@ class UpsampleBlock1d(nn.Module):
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
         attention_multiplier: Optional[int] = None,
+        context_features: Optional[int] = None,
     ):
         super().__init__()
 
@@ -842,8 +875,8 @@ class UpsampleBlock1d(nn.Module):
 
         self.use_pre_upsample = use_pre_upsample
         self.use_attention = use_attention
-        self.num_layers = len(dilations)
         self.skip_scale = 2 ** -0.5 if use_skip_scale else 1.0
+        self.use_context = exists(context_features)
 
         channels = out_channels if use_pre_upsample else in_channels
 
@@ -852,11 +885,13 @@ class UpsampleBlock1d(nn.Module):
                 ResnetBlock1d(
                     in_channels=channels + skip_channels,
                     out_channels=channels,
-                    dilation=dilation,
                     num_groups=num_groups,
                     time_context_features=time_context_features,
+                    context_features=context_features,
+                    context_head_features=attention_features,
+                    context_heads=attention_heads,
                 )
-                for dilation in dilations
+                for _ in range(num_layers)
             ]
         )
 
@@ -883,14 +918,20 @@ class UpsampleBlock1d(nn.Module):
     def add_skip(self, x: Tensor, skip: Tensor) -> Tensor:
         return torch.cat([x, skip * self.skip_scale], dim=1)
 
-    def forward(self, x: Tensor, skips: List[Tensor], t: Tensor) -> Tensor:
+    def forward(
+        self,
+        x: Tensor,
+        skips: List[Tensor],
+        t: Tensor,
+        context: Optional[Tensor] = None,
+    ) -> Tensor:
 
         if self.use_pre_upsample:
             x = self.upsample(x)
 
         for block in self.blocks:
             x = self.add_skip(x, skip=skips.pop())
-            x = block(x, t)
+            x = block(x, t, context if self.use_context else None)
 
         if self.use_attention:
             x = self.transformer(x)
@@ -911,6 +952,7 @@ class BottleneckBlock1d(nn.Module):
         use_attention: bool,
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
+        context_features: Optional[int] = None,
     ):
         super().__init__()
 
@@ -919,12 +961,16 @@ class BottleneckBlock1d(nn.Module):
         )
 
         self.use_attention = use_attention
+        self.use_context = exists(context_features)
 
         self.pre_block = ResnetBlock1d(
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
             time_context_features=time_context_features,
+            context_features=context_features,
+            context_head_features=attention_features,
+            context_heads=attention_heads,
         )
 
         if use_attention:
@@ -944,13 +990,17 @@ class BottleneckBlock1d(nn.Module):
             out_channels=channels,
             num_groups=num_groups,
             time_context_features=time_context_features,
+            context_features=context_features,
+            context_head_features=attention_features,
+            context_heads=attention_heads,
         )
 
-    def forward(self, x: Tensor, t: Tensor) -> Tensor:
-        x = self.pre_block(x, t)
+    def forward(self, x: Tensor, t: Tensor, context: Optional[Tensor] = None) -> Tensor:
+        context = context if self.use_context else None
+        x = self.pre_block(x, t, context)
         if self.use_attention:
             x = self.attention(x)
-        x = self.post_block(x, t)
+        x = self.post_block(x, t, context)
         return x
 
 
@@ -959,9 +1009,10 @@ class UNet1d(nn.Module):
         self,
         in_channels: int,
         channels: int,
+        patch_size: int,
         multipliers: Sequence[int],
         factors: Sequence[int],
-        dilations: Sequence[Sequence[int]],
+        num_blocks: Sequence[int],
         attentions: Sequence[bool],
         attention_heads: int,
         attention_features: int,
@@ -974,18 +1025,19 @@ class UNet1d(nn.Module):
         use_skip_scale: bool,
         use_attention_bottleneck: bool,
         out_channels: Optional[int] = None,
-        patch_size: int = 1,
+        context_features: Optional[int] = None,
     ):
         super().__init__()
 
         out_channels = default(out_channels, in_channels)
         time_context_features = channels * 4
         num_layers = len(multipliers) - 1
+        self.num_layers = num_layers
 
         assert (
             len(factors) == num_layers
             and len(attentions) == num_layers
-            and len(dilations) == num_layers
+            and len(num_blocks) == num_layers
         )
 
         self.to_in = nn.Sequential(
@@ -1016,7 +1068,8 @@ class UNet1d(nn.Module):
                     in_channels=channels * multipliers[i],
                     out_channels=channels * multipliers[i + 1],
                     time_context_features=time_context_features,
-                    dilations=dilations[i],
+                    context_features=context_features if attentions[i] else None,
+                    num_layers=num_blocks[i],
                     factor=factors[i],
                     kernel_multiplier=kernel_multiplier_downsample,
                     num_groups=resnet_groups,
@@ -1033,6 +1086,7 @@ class UNet1d(nn.Module):
         self.bottleneck = BottleneckBlock1d(
             channels=channels * multipliers[-1],
             time_context_features=time_context_features,
+            context_features=context_features if use_attention_bottleneck else None,
             num_groups=resnet_groups,
             use_attention=use_attention_bottleneck,
             attention_heads=attention_heads,
@@ -1045,8 +1099,9 @@ class UNet1d(nn.Module):
                     in_channels=channels * multipliers[i + 1],
                     skip_channels=channels * multipliers[i + 1],
                     out_channels=channels * multipliers[i],
+                    context_features=context_features if attentions[i] else None,
                     time_context_features=time_context_features,
-                    dilations=(1,) * (len(dilations[i]) + (1 if attentions[i] else 0)),
+                    num_layers=num_blocks[i] + (1 if attentions[i] else 0),
                     factor=factors[i],
                     use_nearest=use_nearest_upsample,
                     num_groups=resnet_groups,
@@ -1076,71 +1131,40 @@ class UNet1d(nn.Module):
             Rearrange("b (c p) l -> b c (l p)", p=patch_size),
         )
 
-    def forward(self, x: Tensor, t: Tensor):
+    def forward(self, x: Tensor, t: Tensor, context: Optional[Tensor] = None):
 
         x = self.to_in(x)
         t = self.to_time(t)
         skips_list = []
 
         for downsample in self.downsamples:
-            x, skips = downsample(x, t)
+            x, skips = downsample(x, t, context)
             skips_list += [skips]
 
-        x = self.bottleneck(x, t)
+        x = self.bottleneck(x, t, context)
 
         for upsample in self.upsamples:
             skips = skips_list.pop()
-            x = upsample(x, skips, t)
+            x = upsample(x, skips, t, context)
 
-        x = self.to_out(x)
+        x = self.to_out(x)  # t?
 
         return x
 
 
-class UNet1dAlpha(UNet1d):
+class UNet1d_M(UNet1d):
     def __init__(self, *args, **kwargs):
         default_kwargs = dict(
             in_channels=1,
-            patch_size=1,
             channels=128,
-            multipliers=[1, 2, 4, 4, 4, 4, 4],
-            factors=[4, 4, 4, 4, 2, 2],
-            attentions=[False, False, False, False, True, True],
-            attention_heads=8,
-            attention_features=64,
-            attention_multiplier=2,
-            dilations=[
-                [1, 1, 1],
-                [1, 1, 1],
-                [1, 1, 1],
-                [1, 1, 1],
-                [1, 1, 1],
-                [1, 1, 1],
-            ],
-            resnet_groups=8,
-            kernel_multiplier_downsample=2,
-            kernel_sizes_init=[1, 3, 7],
-            use_nearest_upsample=False,
-            use_skip_scale=True,
-            use_attention_bottleneck=True,
-            use_learned_time_embedding=True,
-        )
-        super().__init__(*args, **{**default_kwargs, **kwargs})
-
-
-class UNet1dBravo(UNet1d):
-    def __init__(self, *args, **kwargs):
-        default_kwargs = dict(
-            in_channels=1,
-            patch_size=8,
-            channels=128,
+            patch_size=16,
             multipliers=[1, 2, 4, 4, 4, 4, 4],
             factors=[4, 4, 4, 2, 2, 2],
+            num_blocks=[2, 2, 2, 2, 2, 2],
             attentions=[False, False, False, True, True, True],
             attention_heads=8,
             attention_features=64,
             attention_multiplier=2,
-            dilations=[[1, 1], [1, 1], [1, 1], [1, 1], [1, 1], [1, 1]],
             resnet_groups=8,
             kernel_multiplier_downsample=2,
             kernel_sizes_init=[1, 3, 7],
