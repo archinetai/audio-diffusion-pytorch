@@ -12,6 +12,10 @@ from torch.nn import functional as F
 
 from .utils import default, exists
 
+"""
+Convolutional Blocks
+"""
+
 
 def Conv1d(*args, **kwargs) -> nn.Module:
     return nn.Conv1d(*args, **kwargs)
@@ -19,49 +23,6 @@ def Conv1d(*args, **kwargs) -> nn.Module:
 
 def ConvTranspose1d(*args, **kwargs) -> nn.Module:
     return nn.ConvTranspose1d(*args, **kwargs)
-
-
-class SinusoidalPositionalEmbedding(nn.Module):
-    def __init__(self, dim: int):
-        super().__init__()
-        self.dim = dim
-
-    def forward(self, x: Tensor) -> Tensor:
-        half_dim = self.dim // 2
-        factor = log(10000) / (half_dim - 1)
-        embedding = torch.exp(torch.arange(half_dim, device=x.device) * -factor)
-        embedding = rearrange(x, "i -> i 1") * rearrange(embedding, "j -> 1 j")
-        return torch.cat((embedding.sin(), embedding.cos()), dim=-1)
-
-
-class LearnedPositionalEmbedding(nn.Module):
-    """Used for continuous time"""
-
-    def __init__(self, dim: int):
-        super().__init__()
-        assert (dim % 2) == 0
-        half_dim = dim // 2
-        self.weights = nn.Parameter(torch.randn(half_dim))
-
-    def forward(self, x: Tensor) -> Tensor:
-        x = rearrange(x, "b -> b 1")
-        freqs = x * rearrange(self.weights, "d -> 1 d") * 2 * pi
-        fouriered = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
-        fouriered = torch.cat((x, fouriered), dim=-1)
-        return fouriered
-
-
-def TimePositionalEmbedding(
-    dim: int, out_features: int, use_learned: bool
-) -> nn.Module:
-    return nn.Sequential(
-        LearnedPositionalEmbedding(dim)
-        if use_learned
-        else SinusoidalPositionalEmbedding(dim),
-        nn.Linear(
-            in_features=dim + 1 if use_learned else dim, out_features=out_features
-        ),
-    )
 
 
 def Downsample1d(
@@ -235,6 +196,82 @@ class ResnetBlock1d(nn.Module):
         return h + self.to_out(x)
 
 
+class CrossEmbed1d(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        *,
+        kernel_sizes: Sequence[int],
+        stride: int,
+        out_channels: Optional[int] = None,
+    ):
+        super().__init__()
+        assert all([*map(lambda t: (t % 2) == (stride % 2), kernel_sizes)])
+        out_channels = default(out_channels, in_channels)
+
+        kernel_sizes = sorted(kernel_sizes)
+        num_scales = len(kernel_sizes)
+
+        channels_list = [int(out_channels / (2 ** i)) for i in range(1, num_scales)]
+        channels_list = [*channels_list, out_channels - sum(channels_list)]
+
+        self.convs = nn.ModuleList([])
+        for kernel_size, channels in zip(kernel_sizes, channels_list):
+            self.convs += [
+                Conv1d(
+                    in_channels=in_channels,
+                    out_channels=channels,
+                    kernel_size=kernel_size,
+                    stride=stride,
+                    padding=(kernel_size - stride) // 2,
+                )
+            ]
+
+    def forward(self, x):
+        out_list = tuple(map(lambda conv: conv(x), self.convs))
+        return torch.cat(out_list, dim=1)
+
+
+"""
+Norms
+"""
+
+
+class LayerNorm(nn.Module):
+    def __init__(self, features: int, *, bias: bool = True, eps: float = 1e-5):
+        super().__init__()
+        self.bias = bias
+        self.eps = eps
+        self.g = nn.Parameter(torch.ones(features))
+        self.b = nn.Parameter(torch.zeros(features)) if bias else None
+
+    def forward(self, x: Tensor) -> Tensor:
+        var = torch.var(x, dim=-1, unbiased=False, keepdim=True)
+        mean = torch.mean(x, dim=-1, keepdim=True)
+        norm = (x - mean) * (var + self.eps).rsqrt() * self.g
+        return norm + self.b if self.bias else norm
+
+
+class LayerNorm1d(nn.Module):
+    def __init__(self, channels: int, *, bias: bool = True, eps: float = 1e-5):
+        super().__init__()
+        self.bias = bias
+        self.eps = eps
+        self.g = nn.Parameter(torch.ones(1, channels, 1))
+        self.b = nn.Parameter(torch.zeros(1, channels, 1)) if bias else None
+
+    def forward(self, x: Tensor) -> Tensor:
+        var = torch.var(x, dim=1, unbiased=False, keepdim=True)
+        mean = torch.mean(x, dim=1, keepdim=True)
+        norm = (x - mean) * (var + self.eps).rsqrt() * self.g
+        return norm + self.b if self.bias else norm
+
+
+"""
+Attention Components
+"""
+
+
 class InsertNullTokens(nn.Module):
     def __init__(self, head_features: int, num_heads: int):
         super().__init__()
@@ -254,19 +291,20 @@ class InsertNullTokens(nn.Module):
         return k, v, mask
 
 
-class LayerNorm(nn.Module):
-    def __init__(self, features: int, *, bias: bool = True, eps: float = 1e-5):
+class MeanPooler(nn.Module):
+    def __init__(self, features: int, *, num_tokens: int):
         super().__init__()
-        self.bias = bias
-        self.eps = eps
-        self.g = nn.Parameter(torch.ones(features))
-        self.b = nn.Parameter(torch.zeros(features)) if bias else None
+
+        self.to_tokens = nn.Sequential(
+            LayerNorm(features=features, bias=False),
+            nn.Linear(in_features=features, out_features=features * num_tokens),
+            Rearrange("b (n d) -> b n d", n=num_tokens),
+        )
 
     def forward(self, x: Tensor) -> Tensor:
-        var = torch.var(x, dim=-1, unbiased=False, keepdim=True)
-        mean = torch.mean(x, dim=-1, keepdim=True)
-        norm = (x - mean) * (var + self.eps).rsqrt() * self.g
-        return norm + self.b if self.bias else norm
+        mean_token = reduce(x, "b n d -> b d", "mean")
+        tokens = self.to_tokens(mean_token)
+        return tokens
 
 
 def FeedForward(features: int, multiplier: int = 2) -> nn.Module:
@@ -277,6 +315,21 @@ def FeedForward(features: int, multiplier: int = 2) -> nn.Module:
         nn.GELU(),
         LayerNorm(mid_features, bias=False),
         nn.Linear(in_features=mid_features, out_features=features, bias=False),
+    )
+
+
+def FeedForward1d(channels: int, multiplier: int = 2):
+    mid_channels = int(channels * multiplier)
+    return nn.Sequential(
+        LayerNorm1d(channels=channels, bias=False),
+        Conv1d(
+            in_channels=channels, out_channels=mid_channels, kernel_size=1, bias=False
+        ),
+        nn.GELU(),
+        LayerNorm1d(channels=mid_channels, bias=False),
+        Conv1d(
+            in_channels=mid_channels, out_channels=channels, kernel_size=1, bias=False
+        ),
     )
 
 
@@ -343,6 +396,11 @@ class AttentionBase(nn.Module):
         out = einsum("... n j, ... j d -> ... n d", attn, v)
         out = rearrange(out, "b h n d -> b n (h d)")
         return self.to_out(out)
+
+
+"""
+Attention Blocks
+"""
 
 
 class Attention(nn.Module):
@@ -460,6 +518,59 @@ class PerceiverAttention(nn.Module):
         return x
 
 
+"""
+Transformer Blocks
+"""
+
+
+class TransformerBlock(nn.Module):
+    def __init__(
+        self,
+        features: int,
+        *,
+        head_features: int = 64,
+        num_heads: int = 8,
+        multiplier: int = 2,
+    ):
+        super().__init__()
+
+        self.attention = Attention(
+            features=features, head_features=head_features, num_heads=num_heads
+        )
+
+        self.feed_forward = FeedForward(features=features, multiplier=multiplier)
+
+    def forward(self, x: Tensor, *, mask: Tensor = None) -> Tensor:
+        x = self.attention(x, mask=mask) + x
+        x = self.feed_forward(x) + x
+        return x
+
+
+class TransformerBlock1d(nn.Module):
+    def __init__(
+        self,
+        channels: int,
+        *,
+        num_heads: int = 8,
+        head_features: int = 32,
+        multiplier: int = 2,
+    ):
+        super().__init__()
+        self.attention = EinopsToAndFrom(
+            "b c l",
+            "b l c",
+            Attention(
+                features=channels, num_heads=num_heads, head_features=head_features
+            ),
+        )
+        self.feed_forward = FeedForward1d(channels=channels, multiplier=multiplier)
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.attention(x) + x
+        x = self.feed_forward(x) + x
+        return x
+
+
 class PerceiverTransformerBlock(nn.Module):
     def __init__(
         self,
@@ -480,6 +591,41 @@ class PerceiverTransformerBlock(nn.Module):
     def forward(self, x: Tensor, byte: Tensor, *, mask: Tensor = None) -> Tensor:
         x = self.attention(x, byte, mask=mask) + x
         x = self.feed_forward(x) + x
+        return x
+
+
+"""
+Transformers
+"""
+
+
+class Transformer(nn.Module):
+    def __init__(
+        self,
+        *,
+        features: int,
+        num_blocks: int,
+        head_features: int = 64,
+        num_heads: int = 8,
+        multiplier: int = 4,
+    ):
+        super().__init__()
+
+        self.blocks = nn.ModuleList(
+            [
+                TransformerBlock(
+                    features=features,
+                    head_features=head_features,
+                    num_heads=num_heads,
+                    multiplier=multiplier,
+                )
+                for i in range(num_blocks)
+            ]
+        )
+
+    def forward(self, x: Tensor, *, mask: Tensor = None) -> Tensor:
+        for block in self.blocks:
+            x = block(x, mask=mask)
         return x
 
 
@@ -511,22 +657,6 @@ class PerceiverTransformer(nn.Module):
         for block in self.blocks:
             x = block(x, byte, mask=mask)
         return x
-
-
-class MeanPooler(nn.Module):
-    def __init__(self, features: int, *, num_tokens: int):
-        super().__init__()
-
-        self.to_tokens = nn.Sequential(
-            LayerNorm(features=features, bias=False),
-            nn.Linear(in_features=features, out_features=features * num_tokens),
-            Rearrange("b (n d) -> b n d", n=num_tokens),
-        )
-
-    def forward(self, x: Tensor) -> Tensor:
-        mean_token = reduce(x, "b n d -> b d", "mean")
-        tokens = self.to_tokens(mean_token)
-        return tokens
 
 
 class PerceiverResampler(nn.Module):
@@ -568,6 +698,54 @@ class PerceiverResampler(nn.Module):
         latent_tokens = torch.cat((self.to_mean_pooled(tokens), latent_tokens), dim=-2)
         # Resample tokens with transformer (returns num_latent+num_pooled tokens)
         return self.transformer(latent_tokens, tokens, mask=mask)
+
+
+class ExtractorTransformer(nn.Module):
+    def __init__(
+        self,
+        *,
+        features: int,
+        num_tokens: int,
+        num_pooled: int,
+        num_blocks: int,
+        attention_head_features: int = 64,
+        attention_num_heads: int = 8,
+        attention_multiplier: int = 4,
+    ):
+        super().__init__()
+
+        self.num_tokens = num_tokens
+        self.num_pooled = num_pooled
+
+        self.latent_tokens = nn.Parameter(torch.randn(num_tokens, features))
+
+        self.to_mean_pooled = MeanPooler(features=features, num_tokens=num_pooled)
+
+        self.transformer = Transformer(
+            features=features,
+            num_blocks=num_blocks,
+            head_features=attention_head_features,
+            num_heads=attention_num_heads,
+            multiplier=attention_multiplier,
+        )
+
+    def forward(self, tokens: Tensor) -> Tuple[Tensor, Tensor]:
+        (b, n, _), n_p, n_e = tokens.shape, self.num_pooled, self.num_tokens
+        # Repeat latent tokens over all batch elements
+        latent_tokens = repeat(self.latent_tokens, "l d -> b l d", b=b)
+        # Mean pooled tokens
+        pooled_tokens = self.to_mean_pooled(tokens)
+        # Concat mean pooled tokens to latent tokens
+        in_tokens = torch.cat((tokens, pooled_tokens, latent_tokens), dim=-2)
+        # Resample tokens with transformer, return main and extracted latent tokens
+        out_tokens = self.transformer(in_tokens)
+        tokens, _, extracted = torch.split(out_tokens, [n, n_p, n_e], dim=-2)
+        return tokens, extracted
+
+
+"""
+Token Conditioning
+"""
 
 
 def rand_bool(shape: Any, proba: float, device: Any = None) -> Tensor:
@@ -671,95 +849,57 @@ class TokenConditiner(nn.Module):
         return tokens
 
 
-class LayerNorm1d(nn.Module):
-    def __init__(self, channels: int, *, bias: bool = True, eps: float = 1e-5):
+"""
+Time Embeddings
+"""
+
+
+class SinusoidalPositionalEmbedding(nn.Module):
+    def __init__(self, dim: int):
         super().__init__()
-        self.bias = bias
-        self.eps = eps
-        self.g = nn.Parameter(torch.ones(1, channels, 1))
-        self.b = nn.Parameter(torch.zeros(1, channels, 1)) if bias else None
+        self.dim = dim
 
     def forward(self, x: Tensor) -> Tensor:
-        var = torch.var(x, dim=1, unbiased=False, keepdim=True)
-        mean = torch.mean(x, dim=1, keepdim=True)
-        norm = (x - mean) * (var + self.eps).rsqrt() * self.g
-        return norm + self.b if self.bias else norm
+        half_dim = self.dim // 2
+        factor = log(10000) / (half_dim - 1)
+        embedding = torch.exp(torch.arange(half_dim, device=x.device) * -factor)
+        embedding = rearrange(x, "i -> i 1") * rearrange(embedding, "j -> 1 j")
+        return torch.cat((embedding.sin(), embedding.cos()), dim=-1)
 
 
-def FeedForward1d(channels: int, multiplier: int = 2):
-    mid_channels = int(channels * multiplier)
+class LearnedPositionalEmbedding(nn.Module):
+    """Used for continuous time"""
+
+    def __init__(self, dim: int):
+        super().__init__()
+        assert (dim % 2) == 0
+        half_dim = dim // 2
+        self.weights = nn.Parameter(torch.randn(half_dim))
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = rearrange(x, "b -> b 1")
+        freqs = x * rearrange(self.weights, "d -> 1 d") * 2 * pi
+        fouriered = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
+        fouriered = torch.cat((x, fouriered), dim=-1)
+        return fouriered
+
+
+def TimePositionalEmbedding(
+    dim: int, out_features: int, use_learned: bool
+) -> nn.Module:
     return nn.Sequential(
-        LayerNorm1d(channels=channels, bias=False),
-        Conv1d(
-            in_channels=channels, out_channels=mid_channels, kernel_size=1, bias=False
-        ),
-        nn.GELU(),
-        LayerNorm1d(channels=mid_channels, bias=False),
-        Conv1d(
-            in_channels=mid_channels, out_channels=channels, kernel_size=1, bias=False
+        LearnedPositionalEmbedding(dim)
+        if use_learned
+        else SinusoidalPositionalEmbedding(dim),
+        nn.Linear(
+            in_features=dim + 1 if use_learned else dim, out_features=out_features
         ),
     )
 
 
-class TransformerBlock1d(nn.Module):
-    def __init__(
-        self,
-        channels: int,
-        *,
-        num_heads: int = 8,
-        head_features: int = 32,
-        multiplier: int = 2,
-    ):
-        super().__init__()
-        self.attention = EinopsToAndFrom(
-            "b c l",
-            "b l c",
-            Attention(
-                features=channels, num_heads=num_heads, head_features=head_features
-            ),
-        )
-        self.feed_forward = FeedForward1d(channels=channels, multiplier=multiplier)
-
-    def forward(self, x: Tensor) -> Tensor:
-        x = self.attention(x) + x
-        x = self.feed_forward(x) + x
-        return x
-
-
-class CrossEmbed1d(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        *,
-        kernel_sizes: Sequence[int],
-        stride: int,
-        out_channels: Optional[int] = None,
-    ):
-        super().__init__()
-        assert all([*map(lambda t: (t % 2) == (stride % 2), kernel_sizes)])
-        out_channels = default(out_channels, in_channels)
-
-        kernel_sizes = sorted(kernel_sizes)
-        num_scales = len(kernel_sizes)
-
-        channels_list = [int(out_channels / (2 ** i)) for i in range(1, num_scales)]
-        channels_list = [*channels_list, out_channels - sum(channels_list)]
-
-        self.convs = nn.ModuleList([])
-        for kernel_size, channels in zip(kernel_sizes, channels_list):
-            self.convs += [
-                Conv1d(
-                    in_channels=in_channels,
-                    out_channels=channels,
-                    kernel_size=kernel_size,
-                    stride=stride,
-                    padding=(kernel_size - stride) // 2,
-                )
-            ]
-
-    def forward(self, x):
-        out_list = tuple(map(lambda conv: conv(x), self.convs))
-        return torch.cat(out_list, dim=1)
+"""
+UNet components and UNets
+"""
 
 
 class DownsampleBlock1d(nn.Module):
