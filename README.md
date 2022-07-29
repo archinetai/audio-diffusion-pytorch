@@ -69,7 +69,7 @@ from audio_diffusion_pytorch import DiffusionSampler, KerrasSchedule
 
 sampler = DiffusionSampler(
     diffusion,
-    num_steps=2, # Set this in the range 32-1000, higher for better quality
+    num_steps=50, # Range 32-1000, higher for better quality
     sigma_schedule=KerrasSchedule(
         sigma_min=0.002,
         sigma_max=1
@@ -90,7 +90,7 @@ from audio_diffusion_pytorch import DiffusionInpainter, KerrasSchedule
 
 inpainter = DiffusionInpainter(
     diffusion,
-    num_steps=2, # Range 32-1000, higher for better quality
+    num_steps=50, # Range 32-1000, higher for better quality
     num_resamples=5, # Range 1-10, higher for better quality
     sigma_schedule=KerrasSchedule(
         sigma_min=0.002,
