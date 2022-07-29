@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from einops import rearrange, reduce
 from torch import Tensor
 
-from ..utils import default, exists
+from .utils import default, exists
 
 """ Samplers and sigma schedules """
 
