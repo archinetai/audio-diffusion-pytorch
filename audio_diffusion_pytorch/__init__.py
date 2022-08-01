@@ -8,4 +8,5 @@ from .diffusion import (
     SigmaSchedule,
     SpanBySpanComposer,
 )
-from .models import UNet1d, UNet1d_M
+from .model import AudioDiffusionModel, Model1d
+from .modules import UNet1d
