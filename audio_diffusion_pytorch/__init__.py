@@ -9,4 +9,4 @@ from .diffusion import (
     SpanBySpanComposer,
 )
 from .model import AudioDiffusionModel, Model1d
-from .modules import UNet1d
+from .modules import AutoEncoder1d, UNet1d

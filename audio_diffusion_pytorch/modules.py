@@ -1,5 +1,5 @@
 from math import log, pi
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -26,10 +26,7 @@ def ConvTranspose1d(*args, **kwargs) -> nn.Module:
 
 
 def Downsample1d(
-    in_channels: int,
-    out_channels: int,
-    factor: int,
-    kernel_multiplier: int,
+    in_channels: int, out_channels: int, factor: int, kernel_multiplier: int = 2
 ) -> nn.Module:
     assert kernel_multiplier % 2 == 0, "Kernel multiplier must be even"
 
@@ -464,7 +461,7 @@ def TimePositionalEmbedding(
 
 
 """
-UNet Components
+Encoder/Decoder Components
 """
 
 
@@ -475,22 +472,30 @@ class DownsampleBlock1d(nn.Module):
         out_channels: int,
         *,
         factor: int,
-        kernel_multiplier: int,
-        time_context_features: int,
         num_groups: int,
         num_layers: int,
-        use_pre_downsample: bool,
-        use_attention: bool,
+        kernel_multiplier: int = 2,
+        use_pre_downsample: bool = True,
+        use_skip: bool = False,
+        use_attention: bool = False,
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
         attention_multiplier: Optional[int] = None,
+        time_context_features: Optional[int] = None,
     ):
         super().__init__()
-
         self.use_pre_downsample = use_pre_downsample
+        self.use_skip = use_skip
         self.use_attention = use_attention
 
         channels = out_channels if use_pre_downsample else in_channels
+
+        self.downsample = Downsample1d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            factor=factor,
+            kernel_multiplier=kernel_multiplier,
+        )
 
         self.blocks = nn.ModuleList(
             [
@@ -517,14 +522,9 @@ class DownsampleBlock1d(nn.Module):
                 multiplier=attention_multiplier,
             )
 
-        self.downsample = Downsample1d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            factor=factor,
-            kernel_multiplier=kernel_multiplier,
-        )
-
-    def forward(self, x: Tensor, t: Tensor) -> Tuple[Tensor, List[Tensor]]:
+    def forward(
+        self, x: Tensor, t: Optional[Tensor] = None
+    ) -> Union[Tuple[Tensor, List[Tensor]], Tensor]:
 
         if self.use_pre_downsample:
             x = self.downsample(x)
@@ -532,36 +532,37 @@ class DownsampleBlock1d(nn.Module):
         skips = []
         for block in self.blocks:
             x = block(x, t)
-            skips += [x]
+            skips += [x] if self.use_skip else []
 
         if self.use_attention:
             x = self.transformer(x)
-            skips += [x]
+            skips += [x] if self.use_skip else []
 
         if not self.use_pre_downsample:
             x = self.downsample(x)
 
-        return x, skips
+        return (x, skips) if self.use_skip else x
 
 
 class UpsampleBlock1d(nn.Module):
     def __init__(
         self,
         in_channels: int,
-        skip_channels: int,
         out_channels: int,
         *,
         factor: int,
-        use_nearest: bool,
         num_layers: int,
-        time_context_features: int,
         num_groups: int,
-        use_pre_upsample: bool,
-        use_skip_scale: bool,
-        use_attention: bool,
+        use_nearest: bool = False,
+        use_pre_upsample: bool = False,
+        use_skip: bool = False,
+        skip_channels: int = 0,
+        use_skip_scale: bool = False,
+        use_attention: bool = False,
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
         attention_multiplier: Optional[int] = None,
+        time_context_features: Optional[int] = None,
     ):
         super().__init__()
 
@@ -573,6 +574,7 @@ class UpsampleBlock1d(nn.Module):
 
         self.use_pre_upsample = use_pre_upsample
         self.use_attention = use_attention
+        self.use_skip = use_skip
         self.skip_scale = 2 ** -0.5 if use_skip_scale else 1.0
 
         channels = out_channels if use_pre_upsample else in_channels
@@ -612,13 +614,18 @@ class UpsampleBlock1d(nn.Module):
     def add_skip(self, x: Tensor, skip: Tensor) -> Tensor:
         return torch.cat([x, skip * self.skip_scale], dim=1)
 
-    def forward(self, x: Tensor, skips: List[Tensor], t: Tensor) -> Tensor:
+    def forward(
+        self,
+        x: Tensor,
+        skips: Optional[List[Tensor]] = None,
+        t: Optional[Tensor] = None,
+    ) -> Tensor:
 
         if self.use_pre_upsample:
             x = self.upsample(x)
 
         for block in self.blocks:
-            x = self.add_skip(x, skip=skips.pop())
+            x = self.add_skip(x, skip=skips.pop()) if exists(skips) else x
             x = block(x, t)
 
         if self.use_attention:
@@ -635,11 +642,11 @@ class BottleneckBlock1d(nn.Module):
         self,
         channels: int,
         *,
-        time_context_features: int,
         num_groups: int,
-        use_attention: bool,
+        use_attention: bool = False,
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
+        time_context_features: Optional[int] = None,
     ):
         super().__init__()
 
@@ -675,12 +682,15 @@ class BottleneckBlock1d(nn.Module):
             time_context_features=time_context_features,
         )
 
-    def forward(self, x: Tensor, t: Tensor) -> Tensor:
+    def forward(self, x: Tensor, t: Optional[Tensor] = None) -> Tensor:
         x = self.pre_block(x, t)
         if self.use_attention:
             x = self.attention(x)
         x = self.post_block(x, t)
         return x
+
+
+""" UNets """
 
 
 class UNet1d(nn.Module):
@@ -751,6 +761,7 @@ class UNet1d(nn.Module):
                     kernel_multiplier=kernel_multiplier_downsample,
                     num_groups=resnet_groups,
                     use_pre_downsample=True,
+                    use_skip=True,
                     use_attention=attentions[i],
                     attention_heads=attention_heads,
                     attention_features=attention_features,
@@ -773,7 +784,6 @@ class UNet1d(nn.Module):
             [
                 UpsampleBlock1d(
                     in_channels=channels * multipliers[i + 1],
-                    skip_channels=channels * multipliers[i + 1],
                     out_channels=channels * multipliers[i],
                     time_context_features=time_context_features,
                     num_layers=num_blocks[i] + (1 if attentions[i] else 0),
@@ -782,6 +792,8 @@ class UNet1d(nn.Module):
                     num_groups=resnet_groups,
                     use_skip_scale=use_skip_scale,
                     use_pre_upsample=False,
+                    use_skip=True,
+                    skip_channels=channels * multipliers[i + 1],
                     use_attention=attentions[i],
                     attention_heads=attention_heads,
                     attention_features=attention_features,
@@ -825,3 +837,131 @@ class UNet1d(nn.Module):
         x = self.to_out(x)  # t?
 
         return x
+
+
+""" Autoencoders """
+
+
+def gaussian_sample(mean: Tensor, logvar: Tensor) -> Tensor:
+    std = torch.exp(0.5 * logvar)
+    sample = mean + std * torch.randn_like(std)
+    return sample
+
+
+class AutoEncoder1d(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        bottleneck_channels: int,
+        channels: int,
+        patch_size: int,
+        multipliers: Sequence[int],
+        factors: Sequence[int],
+        num_blocks: Sequence[int],
+        resnet_groups: int,
+        loss_kl_weight: float,
+        kernel_multiplier_downsample: int = 2,
+    ):
+        super().__init__()
+
+        num_layers = len(multipliers) - 1
+        self.num_layers = num_layers
+        self.loss_kl_weight = loss_kl_weight
+
+        assert len(factors) == num_layers and len(num_blocks) == num_layers
+
+        self.to_in = nn.Sequential(
+            Rearrange("b c (l p) -> b (c p) l", p=patch_size),
+            Conv1d(
+                in_channels=in_channels * patch_size,
+                out_channels=channels,
+                kernel_size=1,
+            ),
+        )
+
+        self.downsamples = nn.ModuleList(
+            [
+                DownsampleBlock1d(
+                    in_channels=channels * multipliers[i],
+                    out_channels=channels * multipliers[i + 1],
+                    num_layers=num_blocks[i],
+                    factor=factors[i],
+                    kernel_multiplier=kernel_multiplier_downsample,
+                    num_groups=resnet_groups,
+                )
+                for i in range(num_layers)
+            ]
+        )
+
+        self.pre_bottleneck = Conv1d(
+            in_channels=channels * multipliers[-1],
+            out_channels=bottleneck_channels * 2,
+            kernel_size=1,
+        )
+
+        self.post_bottleneck = Conv1d(
+            in_channels=bottleneck_channels,
+            out_channels=channels * multipliers[-1],
+            kernel_size=1,
+        )
+
+        self.upsamples = nn.ModuleList(
+            [
+                UpsampleBlock1d(
+                    in_channels=channels * multipliers[i + 1],
+                    out_channels=channels * multipliers[i],
+                    num_layers=num_blocks[i],
+                    factor=factors[i],
+                    num_groups=resnet_groups,
+                )
+                for i in reversed(range(num_layers))
+            ]
+        )
+
+        self.to_out = nn.Sequential(
+            Conv1d(
+                in_channels=channels,
+                out_channels=in_channels * patch_size,
+                kernel_size=1,
+            ),
+            Rearrange("b (c p) l -> b c (l p)", p=patch_size),
+        )
+
+    def encode(
+        self, x: Tensor, *, with_kl_loss: bool = False
+    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+        x = self.to_in(x)
+
+        for downsample in self.downsamples:
+            x = downsample(x)
+
+        mean_and_var = self.pre_bottleneck(x)
+
+        # Chunk channels to mean and log variance and sample in VAE style
+        mean, logvar = torch.chunk(mean_and_var, chunks=2, dim=1)
+        logvar = torch.clamp(logvar, -30.0, 20.0)
+        bottleneck = gaussian_sample(mean, logvar)
+
+        if with_kl_loss:
+            # KL-Loss: diagonal gaussian with mean 0, variance 1, logvar 0
+            b = x.shape[0]
+            var = torch.exp(logvar)
+            loss = 0.5 * torch.sum(torch.pow(mean, 2) + (var - 1.0) - logvar) / b
+            return bottleneck, loss
+
+        return bottleneck
+
+    def decode(self, x: Tensor) -> Tensor:
+        x = self.post_bottleneck(x)
+
+        for upsample in self.upsamples:
+            x = upsample(x)
+
+        return self.to_out(x)
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Returns autoencoding loss"""
+        z, kl_loss = self.encode(x, with_kl_loss=True)
+        y = self.decode(z)
+        loss = F.mse_loss(x, y) + kl_loss * self.loss_kl_weight
+        return loss
