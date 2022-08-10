@@ -19,8 +19,8 @@ from audio_diffusion_pytorch import AudioDiffusionModel
 
 model = AudioDiffusionModel()
 
-# Train model with audio sources [batch, channels, samples]
-x = torch.randn(2, 1, 2 ** 18) # 2**18 ≈ 12s of audio at a frequency of 22050
+# Train model with audio sources
+x = torch.randn(2, 1, 2 ** 18) # [batch, channels, samples], 2**18 ≈ 12s of audio at a frequency of 22050
 loss = model(x)
 loss.backward() # Do this many times
 
@@ -150,7 +150,7 @@ y_long = composer(y, keep_start=True) # [1, 1, 98304]
 ## Appreciation
 
 * [Phil Wang](https://github.com/lucidrains) for the beautiful open source contributions on [diffusion](https://github.com/lucidrains/denoising-diffusion-pytorch) and [Imagen](https://github.com/lucidrains/imagen-pytorch).
-* [Katherine Crowson](https://github.com/crowsonkb) for the experiments with [k-diffusion](https://github.com/crowsonkb/k-diffusion).
+* [Katherine Crowson](https://github.com/crowsonkb) for the experiments with [k-diffusion](https://github.com/crowsonkb/k-diffusion) and discovering the insane `ADPM2` sampler.
 
 ## Citations
 
