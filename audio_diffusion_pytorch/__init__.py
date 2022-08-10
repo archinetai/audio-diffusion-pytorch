@@ -1,11 +1,14 @@
 from .diffusion import (
+    ADPM2Sampler,
     Diffusion,
     DiffusionInpainter,
     DiffusionSampler,
-    KerrasSchedule,
-    LogNormalSampler,
-    SigmaSampler,
-    SigmaSchedule,
+    Distribution,
+    KarrasSampler,
+    KarrasSchedule,
+    LogNormalDistribution,
+    Sampler,
+    Schedule,
     SpanBySpanComposer,
 )
 from .model import AudioDiffusionModel, Model1d

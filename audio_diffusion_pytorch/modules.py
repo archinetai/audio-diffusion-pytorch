@@ -3,7 +3,7 @@ from typing import List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
-from einops import rearrange
+from einops import rearrange, reduce
 from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many, repeat_many
 from einops_exts.torch import EinopsToAndFrom
@@ -844,8 +844,15 @@ class UNet1d(nn.Module):
 
 def gaussian_sample(mean: Tensor, logvar: Tensor) -> Tensor:
     std = torch.exp(0.5 * logvar)
-    sample = mean + std * torch.randn_like(std)
+    eps = torch.randn_like(std)
+    sample = mean + std * eps
     return sample
+
+
+def kl_loss(mean: Tensor, logvar: Tensor) -> Tensor:
+    losses = reduce(1 + logvar - mean ** 2 - logvar.exp(), "b ... -> b", "sum")
+    loss = reduce(-0.5 * losses, "b -> 1", "mean")
+    return loss
 
 
 class AutoEncoder1d(nn.Module):
@@ -943,11 +950,7 @@ class AutoEncoder1d(nn.Module):
         bottleneck = gaussian_sample(mean, logvar)
 
         if with_kl_loss:
-            # KL-Loss: diagonal gaussian with mean 0, variance 1, logvar 0
-            b = x.shape[0]
-            var = torch.exp(logvar)
-            loss = 0.5 * torch.sum(torch.pow(mean, 2) + (var - 1.0) - logvar) / b
-            return bottleneck, loss
+            return bottleneck, kl_loss(mean, logvar)
 
         return bottleneck
 

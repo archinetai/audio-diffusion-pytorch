@@ -3,12 +3,14 @@ from typing import Optional, Sequence
 from torch import Tensor, nn
 
 from .diffusion import (
+    ADPM2Sampler,
     Diffusion,
     DiffusionSampler,
-    KerrasSchedule,
-    LogNormalSampler,
-    SigmaSampler,
-    SigmaSchedule,
+    Distribution,
+    KarrasSchedule,
+    LogNormalDistribution,
+    Sampler,
+    Schedule,
 )
 from .modules import UNet1d
 
@@ -33,7 +35,7 @@ class Model1d(nn.Module):
         use_nearest_upsample: bool,
         use_skip_scale: bool,
         use_attention_bottleneck: bool,
-        diffusion_sigma_sampler: SigmaSampler,
+        diffusion_sigma_distribution: Distribution,
         diffusion_sigma_data: int,
         out_channels: Optional[int] = None,
     ):
@@ -62,7 +64,7 @@ class Model1d(nn.Module):
 
         self.diffusion = Diffusion(
             net=self.unet,
-            sigma_sampler=diffusion_sigma_sampler,
+            sigma_distribution=diffusion_sigma_distribution,
             sigma_data=diffusion_sigma_data,
         )
 
@@ -70,25 +72,15 @@ class Model1d(nn.Module):
         return self.diffusion(x)
 
     def sample(
-        self,
-        noise: Tensor,
-        num_steps: int,
-        sigma_schedule: SigmaSchedule,
-        s_tmin: float,
-        s_tmax: float,
-        s_churn: float,
-        s_noise: float,
+        self, noise: Tensor, num_steps: int, sigma_schedule: Schedule, sampler: Sampler
     ) -> Tensor:
-        sampler = DiffusionSampler(
+        diffusion_sampler = DiffusionSampler(
             diffusion=self.diffusion,
-            num_steps=num_steps,
+            sampler=sampler,
             sigma_schedule=sigma_schedule,
-            s_tmin=s_tmin,
-            s_tmax=s_tmax,
-            s_churn=s_churn,
-            s_noise=s_noise,
+            num_steps=num_steps,
         )
-        return sampler(noise)
+        return diffusion_sampler(noise)
 
 
 class AudioDiffusionModel(Model1d):
@@ -111,17 +103,14 @@ class AudioDiffusionModel(Model1d):
             use_skip_scale=True,
             use_attention_bottleneck=True,
             use_learned_time_embedding=True,
-            diffusion_sigma_sampler=LogNormalSampler(mean=-3.0, std=1.0),
+            diffusion_sigma_distribution=LogNormalDistribution(mean=-3.0, std=1.0),
             diffusion_sigma_data=0.1,
         )
         super().__init__(*args, **{**default_kwargs, **kwargs})
 
     def sample(self, *args, **kwargs):
         default_kwargs = dict(
-            sigma_schedule=KerrasSchedule(sigma_min=0.002, sigma_max=1),
-            s_tmin=0,
-            s_tmax=10,
-            s_churn=40,
-            s_noise=1.003,
+            sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3, rho=9.0),
+            sampler=ADPM2Sampler(rho=1),
         )
         return super().sample(*args, **{**default_kwargs, **kwargs})

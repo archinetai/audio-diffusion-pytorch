@@ -14,6 +14,25 @@ pip install audio-diffusion-pytorch
 
 ## Usage
 
+```py
+
+model = AudioDiffusionModel()
+
+# Train model with audio sources [batch, channels, samples]
+x = torch.randn(2, 1, 2 ** 18)
+loss = net(x)
+loss.backward()
+
+
+# Sample given start noise
+noise = torch.randn(2, 1, 2 ** 18)
+sampled = net.sample(
+    noise=noise,
+    num_steps=5 # Range 1-100
+) # [2, 1, 2**18]
+```
+
+## Usage with Components
 
 ### UNet1d
 ```py
@@ -50,15 +69,15 @@ y = unet(x, t) # [2, 1, 32768], 2 samples of ~1.5 seconds of generated audio at 
 
 #### Training
 ```python
-from audio_diffusion_pytorch import Diffusion, LogNormalSampler
+from audio_diffusion_pytorch import Diffusion, LogNormalDistribution
 
 diffusion = Diffusion(
     net=unet,
-    sigma_sampler=LogNormalSampler(mean = -3.0, std = 1.0),
+    sigma_distribution=LogNormalDistribution(mean = -3.0, std = 1.0),
     sigma_data=0.1
 )
 
-x = torch.randn(3, 1, 2 ** 16) # Batch of training audio samples
+x = torch.randn(3, 1, 2 ** 18) # Batch of training audio samples
 loss = diffusion(x)
 loss.backward() # Do this many times
 ```
@@ -69,21 +88,20 @@ from audio_diffusion_pytorch import DiffusionSampler, KerrasSchedule
 
 sampler = DiffusionSampler(
     diffusion,
-    num_steps=50, # Range 32-1000, higher for better quality
-    sigma_schedule=KerrasSchedule(
+    num_steps=5, # Range 1-100, higher better quality but takes longer
+    sampler=ADPM2Sampler(rho=1),
+    sigma_schedule=KarrasSchedule(
         sigma_min=0.002,
         sigma_max=1
-    ),
-    s_tmin=0,
-    s_tmax=10,
-    s_churn=40,
-    s_noise=1.003
+    )
 )
 # Generate a sample starting from the provided noise
-y = sampler(x = torch.randn(1,1,2 ** 15))
+y = sampler(noise = torch.randn(1,1,2 ** 18))
 ```
 
 #### Inpainting
+
+Note: this uses an old version, needs to be updated.
 
 ```py
 from audio_diffusion_pytorch import DiffusionInpainter, KerrasSchedule

@@ -1,5 +1,5 @@
 from math import sqrt
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import torch
 import torch.nn as nn
@@ -9,15 +9,15 @@ from torch import Tensor
 
 from .utils import default, exists
 
-""" Samplers and sigma schedules """
+""" Distributions """
 
 
-class SigmaSampler:
+class Distribution:
     def __call__(self, num_samples: int, device: torch.device):
         raise NotImplementedError()
 
 
-class LogNormalSampler(SigmaSampler):
+class LogNormalDistribution(Distribution):
     def __init__(self, mean: float, std: float):
         self.mean = mean
         self.std = std
@@ -29,15 +29,18 @@ class LogNormalSampler(SigmaSampler):
         return normal.exp()
 
 
-class SigmaSchedule(nn.Module):
-    """Interface used by different sampling sigma schedules"""
+""" Schedules """
+
+
+class Schedule(nn.Module):
+    """Interface used by different schedules"""
 
     def forward(self, num_steps: int, device: torch.device) -> Tensor:
         raise NotImplementedError()
 
 
-class KerrasSchedule(SigmaSchedule):
-    """https://arxiv.org/abs/2206.00364 eq. (5)"""
+class KarrasSchedule(Schedule):
+    """https://arxiv.org/abs/2206.00364 equation 5"""
 
     def __init__(self, sigma_min: float, sigma_max: float, rho: float = 7.0):
         super().__init__()
@@ -57,6 +60,124 @@ class KerrasSchedule(SigmaSchedule):
         return sigmas
 
 
+""" Samplers """
+
+
+class Sampler(nn.Module):
+    def forward(
+        self, noise: Tensor, fn: Callable, sigmas: Tensor, num_steps: int
+    ) -> Tensor:
+        raise NotImplementedError()
+
+
+class KarrasSampler(Sampler):
+    """https://arxiv.org/abs/2206.00364 algorithm 1"""
+
+    def __init__(
+        self,
+        s_tmin: float = 0,
+        s_tmax: float = float("inf"),
+        s_churn: float = 0.0,
+        s_noise: float = 1.0,
+    ):
+        super().__init__()
+        self.s_tmin = s_tmin
+        self.s_tmax = s_tmax
+        self.s_noise = s_noise
+        self.s_churn = s_churn
+
+    def step(
+        self,
+        x: Tensor,
+        fn: Callable,
+        sigma: float,
+        sigma_next: float,
+        gamma: float,
+        clamp: bool = True,
+    ) -> Tensor:
+        """Algorithm 2 (step)"""
+        # Select temporarily increased noise level
+        sigma_hat = sigma + gamma * sigma
+        # Add noise to move from sigma to sigma_hat
+        epsilon = self.s_noise * torch.randn_like(x)
+        x_hat = x + sqrt(sigma_hat ** 2 - sigma ** 2) * epsilon
+        # Evaluate ∂x/∂sigma at sigma_hat
+        d = (x_hat - fn(x_hat, sigma=sigma_hat, clamp=clamp)) / sigma_hat
+        # Take euler step from sigma_hat to sigma_next
+        x_next = x_hat + (sigma_next - sigma_hat) * d
+        # Second order correction
+        if sigma_next != 0:
+            model_out_next = fn(x_next, sigma=sigma_next, clamp=clamp)
+            d_prime = (x_next - model_out_next) / sigma_next
+            x_next = x_hat + 0.5 * (sigma - sigma_hat) * (d + d_prime)
+        return x_next
+
+    def forward(
+        self, noise: Tensor, fn: Callable, sigmas: Tensor, num_steps: int
+    ) -> Tensor:
+        x = sigmas[0] * noise
+        # Compute gammas
+        gammas = torch.where(
+            (sigmas >= self.s_tmin) & (sigmas <= self.s_tmax),
+            min(self.s_churn / num_steps, sqrt(2) - 1),
+            0.0,
+        )
+        # Denoise to sample
+        for i in range(num_steps - 1):
+            x = self.step(
+                x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1], gamma=gammas[i]  # type: ignore # noqa
+            )
+
+        return x
+
+
+class ADPM2Sampler(Sampler):
+    """https://github.com/crowsonkb/k-diffusion/blob/master/k_diffusion/sampling.py"""
+
+    """ https://www.desmos.com/calculator/jbxjlqd9mb """
+
+    def __init__(self, rho: float = 1.0):
+        super().__init__()
+        self.rho = rho
+
+    def step(
+        self,
+        x: Tensor,
+        fn: Callable,
+        sigma: float,
+        sigma_next: float,
+        clamp: bool = True,
+    ) -> Tensor:
+        # Sigma steps
+        r = self.rho
+        sigma_up = sqrt(sigma_next ** 2 * (sigma ** 2 - sigma_next ** 2) / sigma ** 2)
+        sigma_down = sqrt(sigma_next ** 2 - sigma_up ** 2)
+        sigma_mid = ((sigma ** (1 / r) + sigma_down ** (1 / r)) / 2) ** r
+        # Derivative at sigma (∂x/∂sigma)
+        d = (x - fn(x, sigma=sigma, clamp=clamp)) / sigma
+        # Denoise to midpoint
+        x_mid = x + d * (sigma_mid - sigma)
+        # Derivative at sigma_mid (∂x_mid/∂sigma_mid)
+        d_mid = (x_mid - fn(x_mid, sigma=sigma_mid, clamp=clamp)) / sigma_mid
+        # Denoise to next
+        x = x + d_mid * (sigma_down - sigma)
+        # Add randomness
+        x_next = x + torch.randn_like(x) * sigma_up
+        return x_next
+
+    def forward(
+        self, noise: Tensor, fn: Callable, sigmas: Tensor, num_steps: int
+    ) -> Tensor:
+        x = sigmas[0] * noise
+        # Denoise to sample
+        for i in range(num_steps - 1):
+            x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+        return x
+
+
+""" Diffusion Classes """
+
+
 class Diffusion(nn.Module):
     """Elucidated Diffusion: https://arxiv.org/abs/2206.00364"""
 
@@ -64,14 +185,14 @@ class Diffusion(nn.Module):
         self,
         net: nn.Module,
         *,
-        sigma_sampler: SigmaSampler,
+        sigma_distribution: Distribution,
         sigma_data: float,  # data distribution standard deviation
     ):
         super().__init__()
 
         self.net = net
         self.sigma_data = sigma_data
-        self.sigma_sampler = sigma_sampler
+        self.sigma_distribution = sigma_distribution
 
     def c_skip(self, sigmas: Tensor) -> Tensor:
         return (self.sigma_data ** 2) / (sigmas ** 2 + self.sigma_data ** 2)
@@ -121,7 +242,7 @@ class Diffusion(nn.Module):
         batch, device = x.shape[0], x.device
 
         # Sample amount of noise to add for each batch element
-        sigmas = self.sigma_sampler(num_samples=batch, device=device)
+        sigmas = self.sigma_distribution(num_samples=batch, device=device)
         sigmas_padded = rearrange(sigmas, "b -> b 1 1")
 
         # Add noise to input
@@ -145,65 +266,25 @@ class DiffusionSampler(nn.Module):
         self,
         diffusion: Diffusion,
         *,
-        num_steps: int,
-        sigma_schedule: SigmaSchedule,
-        s_tmin: float = 0,
-        s_tmax: float = float("inf"),
-        s_churn: float = 0.0,
-        s_noise: float = 1.0,
+        sampler: Sampler,
+        sigma_schedule: Schedule,
+        num_steps: Optional[int] = None,
     ):
         super().__init__()
         self.denoise_fn = diffusion.denoise_fn
-        self.num_steps = num_steps
+        self.sampler = sampler
         self.sigma_schedule = sigma_schedule
-        self.s_tmin = s_tmin
-        self.s_tmax = s_tmax
-        self.s_noise = s_noise
-        self.s_churn = s_churn
-
-    def step(
-        self,
-        x: Tensor,
-        sigma: float,
-        sigma_next: float,
-        gamma: float,
-        clamp: bool = True,
-    ) -> Tensor:
-        """Algorithm 2 (step)"""
-        # Select temporarily increased noise level
-        sigma_hat = sigma + gamma * sigma
-        # Add noise to move from sigma to sigma_hat
-        epsilon = self.s_noise * torch.randn_like(x)
-        x_hat = x + sqrt(sigma_hat ** 2 - sigma ** 2) * epsilon
-        # Evaluate ∂x/∂sigma at sigma_hat
-        d = (x_hat - self.denoise_fn(x_hat, sigma=sigma_hat, clamp=clamp)) / sigma_hat
-        # Take euler step from sigma_hat to sigma_next
-        x_next = x_hat + (sigma_next - sigma_hat) * d
-        # Second order correction
-        if sigma_next != 0:
-            model_out_next = self.denoise_fn(x_next, sigma=sigma_next, clamp=clamp)
-            d_prime = (x_next - model_out_next) / sigma_next
-            x_next = x_hat + 0.5 * (sigma - sigma_hat) * (d + d_prime)
-        return x_next
+        self.num_steps = num_steps
 
     @torch.no_grad()
-    def forward(self, x: Tensor, num_steps: int = None) -> Tensor:
-        device = x.device
-        num_steps = default(num_steps, self.num_steps)
+    def forward(self, noise: Tensor, num_steps: Optional[int] = None) -> Tensor:
+        device = noise.device
+        num_steps = default(num_steps, self.num_steps)  # type: ignore
+        assert exists(num_steps), "Parameter `num_steps` must be provided"
         # Compute sigmas using schedule
         sigmas = self.sigma_schedule(num_steps, device)
-        # Sample from first sigma distribution
-        x = sigmas[0] * x
-        # Compute gammas
-        gammas = torch.where(
-            (sigmas >= self.s_tmin) & (sigmas <= self.s_tmax),
-            min(self.s_churn / num_steps, sqrt(2) - 1),
-            0.0,
-        )
-        # Denoise x
-        for i in range(num_steps - 1):
-            x = self.step(x, sigma=sigmas[i], sigma_next=sigmas[i + 1], gamma=gammas[i])  # type: ignore # noqa
-
+        # Sample using sampler
+        x = self.sampler(noise, fn=self.denoise_fn, sigmas=sigmas, num_steps=num_steps)
         x = x.clamp(-1.0, 1.0)
         return x
 
@@ -217,7 +298,7 @@ class DiffusionInpainter(nn.Module):
         *,
         num_steps: int,
         num_resamples: int,
-        sigma_schedule: SigmaSchedule,
+        sigma_schedule: Schedule,
         s_tmin: float = 0,
         s_tmax: float = float("inf"),
         s_churn: float = 0.0,
