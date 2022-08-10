@@ -15,7 +15,6 @@ pip install audio-diffusion-pytorch
 ## Usage
 
 ```py
-
 model = AudioDiffusionModel()
 
 # Train model with audio sources [batch, channels, samples]
@@ -23,12 +22,11 @@ x = torch.randn(2, 1, 2 ** 18)
 loss = net(x)
 loss.backward()
 
-
 # Sample given start noise
 noise = torch.randn(2, 1, 2 ** 18)
 sampled = net.sample(
     noise=noise,
-    num_steps=5 # Range 1-100
+    num_steps=5 # Suggested range: 1-100
 ) # [2, 1, 2**18]
 ```
 
@@ -88,7 +86,7 @@ from audio_diffusion_pytorch import DiffusionSampler, KerrasSchedule
 
 sampler = DiffusionSampler(
     diffusion,
-    num_steps=5, # Range 1-100, higher better quality but takes longer
+    num_steps=5, # Suggested range 1-100, higher better quality but takes longer
     sampler=ADPM2Sampler(rho=1),
     sigma_schedule=KarrasSchedule(
         sigma_min=0.002,
@@ -108,8 +106,8 @@ from audio_diffusion_pytorch import DiffusionInpainter, KerrasSchedule
 
 inpainter = DiffusionInpainter(
     diffusion,
-    num_steps=50, # Range 32-1000, higher for better quality
-    num_resamples=5, # Range 1-10, higher for better quality
+    num_steps=50, # Suggested range 32-1000, higher for better quality
+    num_resamples=5, # Suggested range 1-10, higher for better quality
     sigma_schedule=KerrasSchedule(
         sigma_min=0.002,
         sigma_max=1
