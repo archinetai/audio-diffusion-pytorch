@@ -1,5 +1,4 @@
-
-# Audio Diffusion - PyTorch
+<img src="./LOGO.png"></img>
 
 Unconditional audio generation using diffusion models, in PyTorch. The goal of this repository is to explore different architectures and diffusion models to generate audio (speech and music) directly from/to the waveform.
 Progress will be documented in the [experiments](#experiments) section.
@@ -24,7 +23,7 @@ x = torch.randn(2, 1, 2 ** 18) # [batch, channels, samples], 2**18 ≈ 12s of au
 loss = model(x)
 loss.backward() # Do this many times
 
-# Sample given start noise
+# Sample 2 sources given start noise
 noise = torch.randn(2, 1, 2 ** 18)
 sampled = model.sample(
     noise=noise,
