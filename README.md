@@ -15,19 +15,21 @@ pip install audio-diffusion-pytorch
 ## Usage
 
 ```py
+from audio_diffusion_pytorch import AudioDiffusionModel
+
 model = AudioDiffusionModel()
 
 # Train model with audio sources [batch, channels, samples]
-x = torch.randn(2, 1, 2 ** 18)
-loss = net(x)
-loss.backward()
+x = torch.randn(2, 1, 2 ** 18) # 2**18 ≈ 12s of audio at a frequency of 22050
+loss = model(x)
+loss.backward() # Do this many times
 
 # Sample given start noise
 noise = torch.randn(2, 1, 2 ** 18)
-sampled = net.sample(
+sampled = model.sample(
     noise=noise,
-    num_steps=5 # Suggested range: 1-100
-) # [2, 1, 2**18]
+    num_steps=5 # Suggested range: 2-50
+) # [2, 1, 262144]
 ```
 
 ## Usage with Components
