@@ -144,7 +144,8 @@ y_long = composer(y, keep_start=True) # [1, 1, 98304]
 | --- | --- | --- |
 | [Alpha](https://wandb.ai/schneider/audio/reports/Audio-Diffusion-UNet-Alpha---VmlldzoyMjk3MzIz?accessToken=y0l3igdvnm4ogn4d3ph3b0i8twwcf7meufbviwt15f0qtasyn1i14hg340bkk1te) | [6bd9279f19](https://github.com/archinetai/audio-diffusion-pytorch/tree/6bd9279f192fc0c11eb8a21cd919d9c41181bf35) | Initial tests on LJSpeech dataset with new architecture and basic DDPM diffusion model. |
 | [Bravo](https://wandb.ai/schneider/audio/reports/Audio-Diffusion-Bravo---VmlldzoyMzE4NjIx?accessToken=qt2w1jeqch9l5v3ffjns99p69jsmexk849dszyiennfbivgg396378u6ken2fm2d) | [a05f30aa94](https://github.com/archinetai/audio-diffusion-pytorch/tree/a05f30aa94e07600038d36cfb96f8492ef735a99) | Elucidated diffusion, improved architecture with patching, longer duration, initial good (unsupervised) results on LJSpeech.
-| [Charlie](https://wandb.ai/schneider/audio/reports/Audio-Diffusion-Charlie---VmlldzoyMzYyNDA1?accessToken=71gmurcwndv5e2abqrjnlh3n74j5555j3tycpd7h40tnv8fvb17k5pjkb57j9xxa) | (current) | Train on music with [YoutubeDataset](https://github.com/archinetai/audio-data-pytorch), larger patch tests for longer tracks, inpainting tests, initial test with infinite generation using SpanBySpanComposer. |
+| [Charlie](https://wandb.ai/schneider/audio/reports/Audio-Diffusion-Charlie---VmlldzoyMzYyNDA1?accessToken=71gmurcwndv5e2abqrjnlh3n74j5555j3tycpd7h40tnv8fvb17k5pjkb57j9xxa) | [50ecc30d70](https://github.com/archinetai/audio-diffusion-pytorch/tree/50ecc30d70a211b92cb9c38d4b0250d7cc30533f) | Train on music with [YoutubeDataset](https://github.com/archinetai/audio-data-pytorch), larger patch tests for longer tracks, inpainting tests, initial test with infinite generation using SpanBySpanComposer. |
+| Delta (soon) | (current) | Test model with the faster `ADPM2` sampler and dynamic thresholding. |
 
 
 ## Appreciation
