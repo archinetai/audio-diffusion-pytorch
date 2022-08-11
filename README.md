@@ -73,7 +73,8 @@ from audio_diffusion_pytorch import Diffusion, LogNormalDistribution
 diffusion = Diffusion(
     net=unet,
     sigma_distribution=LogNormalDistribution(mean = -3.0, std = 1.0),
-    sigma_data=0.1
+    sigma_data=0.1,
+    dynamic_threshold=0.95
 )
 
 x = torch.randn(3, 1, 2 ** 18) # Batch of training audio samples

@@ -37,6 +37,7 @@ class Model1d(nn.Module):
         use_attention_bottleneck: bool,
         diffusion_sigma_distribution: Distribution,
         diffusion_sigma_data: int,
+        diffusion_dynamic_threshold: float,
         out_channels: Optional[int] = None,
     ):
         super().__init__()
@@ -66,6 +67,7 @@ class Model1d(nn.Module):
             net=self.unet,
             sigma_distribution=diffusion_sigma_distribution,
             sigma_data=diffusion_sigma_data,
+            dynamic_threshold=diffusion_dynamic_threshold,
         )
 
     def forward(self, x: Tensor) -> Tensor:
@@ -105,6 +107,7 @@ class AudioDiffusionModel(Model1d):
             use_learned_time_embedding=True,
             diffusion_sigma_distribution=LogNormalDistribution(mean=-3.0, std=1.0),
             diffusion_sigma_data=0.1,
+            diffusion_dynamic_threshold=0.95,
         )
         super().__init__(*args, **{**default_kwargs, **kwargs})
 
