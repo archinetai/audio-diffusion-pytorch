@@ -90,10 +90,7 @@ sampler = DiffusionSampler(
     diffusion,
     num_steps=5, # Suggested range 1-100, higher better quality but takes longer
     sampler=ADPM2Sampler(rho=1),
-    sigma_schedule=KarrasSchedule(
-        sigma_min=0.002,
-        sigma_max=1
-    )
+    sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0)
 )
 # Generate a sample starting from the provided noise
 y = sampler(noise = torch.randn(1,1,2 ** 18))
@@ -101,27 +98,24 @@ y = sampler(noise = torch.randn(1,1,2 ** 18))
 
 #### Inpainting
 
-Note: this uses an old version, needs to be updated.
+Note: this is fixed to the `KarrasSampler`, needs to be updated to custom sampler.
 
 ```py
-from audio_diffusion_pytorch import DiffusionInpainter, KerrasSchedule
+from audio_diffusion_pytorch import DiffusionInpainter, KarrasSchedule
 
 inpainter = DiffusionInpainter(
     diffusion,
     num_steps=50, # Suggested range 32-1000, higher for better quality
     num_resamples=5, # Suggested range 1-10, higher for better quality
-    sigma_schedule=KerrasSchedule(
-        sigma_min=0.002,
-        sigma_max=1
-    ),
+    sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0),
     s_tmin=0,
     s_tmax=10,
     s_churn=40,
     s_noise=1.003
 )
 
-inpaint = torch.randn(1,1,2 ** 15) # Start track, e.g. one sampled with DiffusionSampler
-inpaint_mask = torch.randint(0,2, (1,1,2 ** 15), dtype=torch.bool) # Set to `True` the parts you want to keep
+inpaint = torch.randn(1,1,2 ** 18) # Start track, e.g. one sampled with DiffusionSampler
+inpaint_mask = torch.randint(0,2, (1,1,2 ** 18), dtype=torch.bool) # Set to `True` the parts you want to keep
 y = inpainter(inpaint = inpaint, inpaint_mask = inpaint_mask)
 ```
 
@@ -147,6 +141,13 @@ y_long = composer(y, keep_start=True) # [1, 1, 98304]
 | [Charlie](https://wandb.ai/schneider/audio/reports/Audio-Diffusion-Charlie---VmlldzoyMzYyNDA1?accessToken=71gmurcwndv5e2abqrjnlh3n74j5555j3tycpd7h40tnv8fvb17k5pjkb57j9xxa) | [50ecc30d70](https://github.com/archinetai/audio-diffusion-pytorch/tree/50ecc30d70a211b92cb9c38d4b0250d7cc30533f) | Train on music with [YoutubeDataset](https://github.com/archinetai/audio-data-pytorch), larger patch tests for longer tracks, inpainting tests, initial test with infinite generation using SpanBySpanComposer. |
 | Delta (soon) | (current) | Test model with the faster `ADPM2` sampler and dynamic thresholding. |
 
+## TODO
+
+- [x] Add elucidated diffusion.
+- [x] Add ancestral DPM2 sampler.
+- [x] Add dynamic thresholding.
+- [ ] Add support with (variational) autoencoder to compress audio before diffusion.
+- [ ] Fix inpainting and make it work with ADPM2 sampler.
 
 ## Appreciation
 

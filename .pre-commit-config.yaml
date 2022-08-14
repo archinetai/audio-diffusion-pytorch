@@ -29,7 +29,7 @@ repos:
     -   id: flake8
         args: [
             '--per-file-ignores=__init__.py:F401',
-            '--max-line-length=88'
+            '--max-line-length=88',
         ]
 
 # Checks types
