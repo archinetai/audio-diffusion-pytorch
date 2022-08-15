@@ -146,7 +146,7 @@ y_long = composer(y, keep_start=True) # [1, 1, 98304]
 - [x] Add elucidated diffusion.
 - [x] Add ancestral DPM2 sampler.
 - [x] Add dynamic thresholding.
-- [ ] Add support with (variational) autoencoder to compress audio before diffusion.
+- [x] Add (variational) autoencoder option to compress audio before diffusion.
 - [ ] Fix inpainting and make it work with ADPM2 sampler.
 
 ## Appreciation
