@@ -84,7 +84,7 @@ loss.backward() # Do this many times
 
 #### Sampling
 ```python
-from audio_diffusion_pytorch import DiffusionSampler, KerrasSchedule
+from audio_diffusion_pytorch import DiffusionSampler, KarrasSchedule
 
 sampler = DiffusionSampler(
     diffusion,
