@@ -61,7 +61,7 @@ unet = UNet1d(
 x = torch.randn(3, 1, 2 ** 16)
 t = torch.tensor([0.2, 0.8, 0.3])
 
-y = unet(x, t) # [2, 1, 32768], 2 samples of ~1.5 seconds of generated audio at 22050kHz
+y = unet(x, t) # [3, 1, 32768], compute 3 samples of ~1.5 seconds at 22050Hz with the given noise levels t
 ```
 
 ### Diffusion
