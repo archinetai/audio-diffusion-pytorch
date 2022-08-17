@@ -27,7 +27,7 @@ loss.backward() # Do this many times
 noise = torch.randn(2, 1, 2 ** 18)
 sampled = model.sample(
     noise=noise,
-    num_steps=5 # Suggested range: 2-50
+    num_steps=5 # Suggested range: 2-100
 ) # [2, 1, 262144]
 ```
 
@@ -88,7 +88,7 @@ from audio_diffusion_pytorch import DiffusionSampler, KarrasSchedule
 
 sampler = DiffusionSampler(
     diffusion,
-    num_steps=5, # Suggested range 1-100, higher better quality but takes longer
+    num_steps=5, # Suggested range 2-100, higher better quality but takes longer
     sampler=ADPM2Sampler(rho=1),
     sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0)
 )
@@ -98,20 +98,15 @@ y = sampler(noise = torch.randn(1,1,2 ** 18))
 
 #### Inpainting
 
-Note: this is fixed to the `KarrasSampler`, needs to be updated to custom sampler.
-
 ```py
-from audio_diffusion_pytorch import DiffusionInpainter, KarrasSchedule
+from audio_diffusion_pytorch import DiffusionInpainter, KarrasSchedule, ADPM2Sampler
 
 inpainter = DiffusionInpainter(
     diffusion,
-    num_steps=50, # Suggested range 32-1000, higher for better quality
-    num_resamples=5, # Suggested range 1-10, higher for better quality
+    num_steps=5, # Suggested range 2-100, higher for better quality
+    num_resamples=1, # Suggested range 1-10, higher for better quality
     sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0),
-    s_tmin=0,
-    s_tmax=10,
-    s_churn=40,
-    s_noise=1.003
+    sampler=ADPM2Sampler(rho=1.0),
 )
 
 inpaint = torch.randn(1,1,2 ** 18) # Start track, e.g. one sampled with DiffusionSampler
@@ -147,7 +142,7 @@ y_long = composer(y, keep_start=True) # [1, 1, 98304]
 - [x] Add ancestral DPM2 sampler.
 - [x] Add dynamic thresholding.
 - [x] Add (variational) autoencoder option to compress audio before diffusion.
-- [ ] Fix inpainting and make it work with ADPM2 sampler.
+- [x] Fix inpainting and make it work with ADPM2 sampler.
 
 ## Appreciation
 

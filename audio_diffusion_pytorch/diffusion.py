@@ -1,5 +1,5 @@
 from math import sqrt
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -69,6 +69,17 @@ class Sampler(nn.Module):
     ) -> Tensor:
         raise NotImplementedError()
 
+    def inpaint(
+        self,
+        source: Tensor,
+        mask: Tensor,
+        fn: Callable,
+        sigmas: Tensor,
+        num_steps: int,
+        num_resamples: int,
+    ) -> Tensor:
+        raise NotImplementedError("Inpainting not available with current sampler")
+
 
 class KarrasSampler(Sampler):
     """https://arxiv.org/abs/2206.00364 algorithm 1"""
@@ -128,18 +139,22 @@ class KarrasSampler(Sampler):
 class ADPM2Sampler(Sampler):
     """https://github.com/crowsonkb/k-diffusion/blob/master/k_diffusion/sampling.py"""
 
-    """ https://www.desmos.com/calculator/jbxjlqd9mb """
+    """https://www.desmos.com/calculator/jbxjlqd9mb"""
 
     def __init__(self, rho: float = 1.0):
         super().__init__()
         self.rho = rho
 
-    def step(self, x: Tensor, fn: Callable, sigma: float, sigma_next: float) -> Tensor:
-        # Sigma steps
+    def get_sigmas(self, sigma: float, sigma_next: float) -> Tuple[float, float, float]:
         r = self.rho
         sigma_up = sqrt(sigma_next ** 2 * (sigma ** 2 - sigma_next ** 2) / sigma ** 2)
         sigma_down = sqrt(sigma_next ** 2 - sigma_up ** 2)
         sigma_mid = ((sigma ** (1 / r) + sigma_down ** (1 / r)) / 2) ** r
+        return sigma_up, sigma_down, sigma_mid
+
+    def step(self, x: Tensor, fn: Callable, sigma: float, sigma_next: float) -> Tensor:
+        # Sigma steps
+        sigma_up, sigma_down, sigma_mid = self.get_sigmas(sigma, sigma_next)
         # Derivative at sigma (∂x/∂sigma)
         d = (x - fn(x, sigma=sigma)) / sigma
         # Denoise to midpoint
@@ -160,6 +175,31 @@ class ADPM2Sampler(Sampler):
         for i in range(num_steps - 1):
             x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
         return x
+
+    def inpaint(
+        self,
+        source: Tensor,
+        mask: Tensor,
+        fn: Callable,
+        sigmas: Tensor,
+        num_steps: int,
+        num_resamples: int,
+    ) -> Tensor:
+        x = sigmas[0] * torch.randn_like(source)
+
+        for i in range(num_steps - 1):
+            # Noise source to current noise level
+            source_noisy = source + sigmas[i] * torch.randn_like(source)
+            for r in range(num_resamples):
+                # Merge noisy source and current then denoise
+                x = source_noisy * mask + x * ~mask
+                x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+                # Renoise if not last resample step
+                if r < num_resamples - 1:
+                    sigma = sqrt(sigmas[i] ** 2 - sigmas[i + 1] ** 2)
+                    x = x + sigma * torch.randn_like(x)
+
+        return source * mask + x * ~mask
 
 
 """ Diffusion Classes """
@@ -188,17 +228,16 @@ class Diffusion(nn.Module):
         self.sigma_distribution = sigma_distribution
         self.dynamic_threshold = dynamic_threshold
 
-    def c_skip(self, sigmas: Tensor) -> Tensor:
-        return (self.sigma_data ** 2) / (sigmas ** 2 + self.sigma_data ** 2)
-
-    def c_out(self, sigmas: Tensor) -> Tensor:
-        return sigmas * self.sigma_data * (self.sigma_data ** 2 + sigmas ** 2) ** -0.5
-
-    def c_in(self, sigmas: Tensor) -> Tensor:
-        return 1 * (sigmas ** 2 + self.sigma_data ** 2) ** -0.5
-
-    def c_noise(self, sigmas: Tensor) -> Tensor:
-        return torch.log(sigmas) * 0.25
+    def get_scale_weights(self, sigmas: Tensor) -> Tuple[Tensor, ...]:
+        sigma_data = self.sigma_data
+        sigmas_padded = rearrange(sigmas, "b -> b 1 1")
+        c_skip = (sigma_data ** 2) / (sigmas_padded ** 2 + sigma_data ** 2)
+        c_out = (
+            sigmas_padded * sigma_data * (sigma_data ** 2 + sigmas_padded ** 2) ** -0.5
+        )
+        c_in = (sigmas_padded ** 2 + sigma_data ** 2) ** -0.5
+        c_noise = torch.log(sigmas) * 0.25
+        return c_skip, c_out, c_in, c_noise
 
     def denoise_fn(
         self,
@@ -216,13 +255,10 @@ class Diffusion(nn.Module):
 
         assert exists(sigmas)
 
-        sigmas_padded = rearrange(sigmas, "b -> b 1 1")
-
         # Predict network output and add skip connection
-        x_pred = self.net(self.c_in(sigmas_padded) * x_noisy, self.c_noise(sigmas))
-        x_denoised = (
-            self.c_skip(sigmas_padded) * x_noisy + self.c_out(sigmas_padded) * x_pred
-        )
+        c_skip, c_out, c_in, c_noise = self.get_scale_weights(sigmas)
+        x_pred = self.net(c_in * x_noisy, c_noise)
+        x_denoised = c_skip * x_noisy + c_out * x_pred
 
         # Dynamic thresholding
         if self.dynamic_threshold == 0.0:
@@ -294,94 +330,32 @@ class DiffusionSampler(nn.Module):
 
 
 class DiffusionInpainter(nn.Module):
-    """RePaint Inpainting: https://arxiv.org/abs/2201.09865"""
-
     def __init__(
         self,
         diffusion: Diffusion,
         *,
         num_steps: int,
         num_resamples: int,
+        sampler: Sampler,
         sigma_schedule: Schedule,
-        s_tmin: float = 0,
-        s_tmax: float = float("inf"),
-        s_churn: float = 0.0,
-        s_noise: float = 1.0,
     ):
         super().__init__()
         self.denoise_fn = diffusion.denoise_fn
         self.num_steps = num_steps
         self.num_resamples = num_resamples
+        self.inpaint_fn = sampler.inpaint
         self.sigma_schedule = sigma_schedule
-        self.s_tmin = s_tmin
-        self.s_tmax = s_tmax
-        self.s_noise = s_noise
-        self.s_churn = s_churn
-
-    def step(
-        self,
-        x: Tensor,
-        *,
-        inpaint: Tensor,
-        inpaint_mask: Tensor,
-        sigma: float,
-        sigma_next: float,
-        gamma: float,
-        renoise: bool,
-        clamp: bool = True,
-    ) -> Tensor:
-        """Algorithm 2 (step)"""
-        # Select temporarily increased noise level
-        sigma_hat = sigma + gamma * sigma
-        # Noise to move from sigma to sigma_hat
-        epsilon = self.s_noise * torch.randn_like(x)
-        noise = sqrt(sigma_hat ** 2 - sigma ** 2) * epsilon
-        # Add increased noise to mixed value
-        x_hat = x * ~inpaint_mask + inpaint * inpaint_mask + noise
-        # Evaluate ∂x/∂sigma at sigma_hat
-        d = (x_hat - self.denoise_fn(x_hat, sigma=sigma_hat)) / sigma_hat
-        # Take euler step from sigma_hat to sigma_next
-        x_next = x_hat + (sigma_next - sigma_hat) * d
-        # Second order correction
-        if sigma_next != 0:
-            model_out_next = self.denoise_fn(x_next, sigma=sigma_next)
-            d_prime = (x_next - model_out_next) / sigma_next
-            x_next = x_hat + 0.5 * (sigma - sigma_hat) * (d + d_prime)
-        # Renoise for next resampling step
-        if renoise:
-            x_next = x_next + (sigma - sigma_next) * torch.randn_like(x_next)
-        return x_next
 
     @torch.no_grad()
     def forward(self, inpaint: Tensor, inpaint_mask: Tensor) -> Tensor:
-        device = inpaint.device
-        num_steps, num_resamples = self.num_steps, self.num_resamples
-        # Compute sigmas using schedule
-        sigmas = self.sigma_schedule(num_steps, device)
-        # Sample from first sigma distribution
-        x = sigmas[0] * torch.randn_like(inpaint)
-        # Compute gammas
-        gammas = torch.where(
-            (sigmas >= self.s_tmin) & (sigmas <= self.s_tmax),
-            min(self.s_churn / num_steps, sqrt(2) - 1),
-            0.0,
+        x = self.inpaint_fn(
+            source=inpaint,
+            mask=inpaint_mask,
+            fn=self.denoise_fn,
+            sigmas=self.sigma_schedule(self.num_steps, inpaint.device),
+            num_steps=self.num_steps,
+            num_resamples=self.num_resamples,
         )
-
-        for i in range(num_steps - 1):
-            for r in range(num_resamples):
-                x = self.step(
-                    x=x,
-                    inpaint=inpaint,
-                    inpaint_mask=inpaint_mask,
-                    sigma=sigmas[i],
-                    sigma_next=sigmas[i + 1],
-                    gamma=gammas[i],  # type: ignore # noqa
-                    renoise=i < num_steps - 1 and r < num_resamples,
-                )
-
-        x = x.clamp(-1.0, 1.0)
-        # Make sure inpainting are is same as input
-        x = x * ~inpaint_mask + inpaint * inpaint_mask
         return x
 
 
