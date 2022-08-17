@@ -151,6 +151,7 @@ y_long = composer(y, keep_start=True) # [1, 1, 98304]
 
 ## Appreciation
 
+* [ETH Zurich](https://inf.ethz.ch/) for the compute, [Zhijing Jin](https://zhijing-jin.com/), [Mrinmaya Sachan](http://www.mrinmaya.io/), and [Bernhard Schoelkopf](https://is.mpg.de/~bs) for supervising this Thesis.
 * [Phil Wang](https://github.com/lucidrains) for the beautiful open source contributions on [diffusion](https://github.com/lucidrains/denoising-diffusion-pytorch) and [Imagen](https://github.com/lucidrains/imagen-pytorch).
 * [Katherine Crowson](https://github.com/crowsonkb) for the experiments with [k-diffusion](https://github.com/crowsonkb/k-diffusion) and discovering the insane `ADPM2` sampler.
 
@@ -173,16 +174,6 @@ Author = {Andreas Lugmayr and Martin Danelljan and Andres Romero and Fisher Yu a
 Title = {RePaint: Inpainting using Denoising Diffusion Probabilistic Models},
 Year = {2022},
 Eprint = {arXiv:2201.09865},
-}
-```
-
-Diffusion cosine schedule
-```bibtex
-@misc{2102.09672,
-Author = {Alex Nichol and Prafulla Dhariwal},
-Title = {Improved Denoising Diffusion Probabilistic Models},
-Year = {2021},
-Eprint = {arXiv:2102.09672},
 }
 ```
 
