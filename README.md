@@ -1,7 +1,7 @@
 <img src="./LOGO.png"></img>
 
 Unconditional audio generation using diffusion models, in PyTorch. The goal of this repository is to explore different architectures and diffusion models to generate audio (speech and music) directly from/to the waveform.
-Progress will be documented in the [experiments](#experiments) section.
+Progress will be documented in the [experiments](#experiments) section. You can use the [`audio-diffusion-pytorch-trainer`](https://github.com/archinetai/audio-diffusion-pytorch-trainer) to run your own experiments – please share your findings in the [discussions](https://github.com/archinetai/audio-diffusion-pytorch/discussions) page!
 
 ## Install
 
@@ -143,6 +143,7 @@ y_long = composer(y, keep_start=True) # [1, 1, 98304]
 - [x] Add dynamic thresholding.
 - [x] Add (variational) autoencoder option to compress audio before diffusion.
 - [x] Fix inpainting and make it work with ADPM2 sampler.
+- [x] Add trainer with experiments.
 
 ## Appreciation
 
