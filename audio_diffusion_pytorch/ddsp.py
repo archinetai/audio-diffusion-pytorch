@@ -29,9 +29,7 @@ def center_pad_next_pow_2(x: Tensor) -> Tensor:
 
 def get_qmf_bank(h: Tensor, nun_bands: int) -> Tensor:
     """
-    Modulates an input protoype filter into a bank of cosine modulated filters
-    h: prototype filter
-    nun_bands: number of sub-bands
+    Modulates an input protoype filter h into a bank of cosine modulated filters
     """
     k = torch.arange(nun_bands).reshape(-1, 1)
     N = h.shape[-1]
@@ -131,7 +129,7 @@ def amp_to_impulse_response(amp: Tensor, target_size: int) -> Tensor:
 
 def fft_convolve(signal: Tensor, kernel: Tensor) -> Tensor:
     """
-    convolves signal by kernel on the last dimension
+    Convolves signal by kernel on the last dimension
     """
     signal = F.pad(signal, (0, signal.shape[-1]))
     kernel = F.pad(kernel, (kernel.shape[-1], 0))
@@ -156,7 +154,6 @@ class PQMF(nn.Module):
         h = get_prototype(attenuation, num_bands)
         hk = get_qmf_bank(torch.from_numpy(h).float(), num_bands)
         hk = center_pad_next_pow_2(hk)
-        print(hk.shape)
         self.register_buffer("hk", hk)
 
     def forward(self, x):
