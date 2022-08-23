@@ -244,6 +244,7 @@ class Diffusion(nn.Module):
         x_noisy: Tensor,
         sigmas: Optional[Tensor] = None,
         sigma: Optional[float] = None,
+        **kwargs,
     ) -> Tensor:
         batch, device = x_noisy.shape[0], x_noisy.device
 
@@ -257,7 +258,7 @@ class Diffusion(nn.Module):
 
         # Predict network output and add skip connection
         c_skip, c_out, c_in, c_noise = self.get_scale_weights(sigmas)
-        x_pred = self.net(c_in * x_noisy, c_noise)
+        x_pred = self.net(c_in * x_noisy, c_noise, **kwargs)
         x_denoised = c_skip * x_noisy + c_out * x_pred
 
         # Dynamic thresholding
@@ -278,7 +279,7 @@ class Diffusion(nn.Module):
         # Computes weight depending on data distribution
         return (sigmas ** 2 + self.sigma_data ** 2) * (sigmas * self.sigma_data) ** -2
 
-    def forward(self, x: Tensor, noise: Tensor = None) -> Tensor:
+    def forward(self, x: Tensor, noise: Tensor = None, **kwargs) -> Tensor:
         batch, device = x.shape[0], x.device
 
         # Sample amount of noise to add for each batch element
@@ -290,7 +291,7 @@ class Diffusion(nn.Module):
         x_noisy = x + sigmas_padded * noise
 
         # Compute denoised values
-        x_denoised = self.denoise_fn(x_noisy, sigmas=sigmas)
+        x_denoised = self.denoise_fn(x_noisy, sigmas=sigmas, **kwargs)
 
         # Compute weighted loss
         losses = F.mse_loss(x_denoised, x, reduction="none")
@@ -317,14 +318,18 @@ class DiffusionSampler(nn.Module):
         self.num_steps = num_steps
 
     @torch.no_grad()
-    def forward(self, noise: Tensor, num_steps: Optional[int] = None) -> Tensor:
+    def forward(
+        self, noise: Tensor, num_steps: Optional[int] = None, **kwargs
+    ) -> Tensor:
         device = noise.device
         num_steps = default(num_steps, self.num_steps)  # type: ignore
         assert exists(num_steps), "Parameter `num_steps` must be provided"
         # Compute sigmas using schedule
         sigmas = self.sigma_schedule(num_steps, device)
+        # Append additional kwargs to denoise function (used e.g. for conditional unet)
+        fn = lambda *a, **ka: self.denoise_fn(*a, **{**ka, **kwargs})  # noqa
         # Sample using sampler
-        x = self.sampler(noise, fn=self.denoise_fn, sigmas=sigmas, num_steps=num_steps)
+        x = self.sampler(noise, fn=fn, sigmas=sigmas, num_steps=num_steps)
         x = x.clamp(-1.0, 1.0)
         return x
 
