@@ -80,6 +80,9 @@ class ConvBlock1d(nn.Module):
         in_channels: int,
         out_channels: int,
         *,
+        kernel_size: int = 3,
+        stride: int = 1,
+        padding: int = 1,
         dilation: int = 1,
         num_groups: int = 8,
         use_norm: bool = True,
@@ -95,7 +98,8 @@ class ConvBlock1d(nn.Module):
         self.project = Conv1d(
             in_channels=in_channels,
             out_channels=out_channels,
-            kernel_size=3,
+            kernel_size=kernel_size,
+            stride=stride,
             padding=dilation,
             dilation=dilation,
         )
