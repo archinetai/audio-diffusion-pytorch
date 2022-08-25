@@ -9,7 +9,13 @@ Progress will be documented in the [experiments](#experiments) section. You can 
 pip install audio-diffusion-pytorch
 ```
 
-[![PyPI - Python Version](https://img.shields.io/pypi/v/audio-diffusion-pytorch?style=flat&colorA=0f0f0f&colorB=0f0f0f)](https://pypi.org/project/audio-diffusion-pytorch/)
+[![PyPI - Python Version](https://img.shields.io/pypi/v/audio-diffusion-pytorch?style=flat&colorA=black&colorB=black)](https://pypi.org/project/audio-diffusion-pytorch/)
+[![Downloads](https://static.pepy.tech/personalized-badge/audio-diffusion-pytorch?period=total&units=international_system&left_color=black&right_color=black&left_text=Downloads)](https://pepy.tech/project/audio-diffusion-pytorch)
+[![HuggingFace](https://img.shields.io/badge/Trained%20Models-%F0%9F%A4%97-yellow?style=flat&colorA=black&colorB=black)](https://huggingface.co/archinetai/audio-diffusion-pytorch/tree/main)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](
+https://colab.research.google.com/gist/flavioschneider/39c6454bfc2d03dc7d0c5c9d8e2078d1/audio-diffusion-pytorch-v0-1.ipynb)
+
+
 
 ## Usage
 
