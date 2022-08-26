@@ -36,7 +36,6 @@ def Downsample1d(
         kernel_size=factor * kernel_multiplier + 1,
         stride=factor,
         padding=factor * (kernel_multiplier // 2),
-        groups=in_channels // 4,
     )
 
 
@@ -718,13 +717,28 @@ class UNet1d(nn.Module):
         use_skip_scale: bool,
         use_attention_bottleneck: bool,
         out_channels: Optional[int] = None,
+        context_channels: Optional[Sequence[int]] = None,
     ):
         super().__init__()
 
         out_channels = default(out_channels, in_channels)
+        context_channels = list(default(context_channels, []))
         time_context_features = channels * 4
+
         num_layers = len(multipliers) - 1
         self.num_layers = num_layers
+
+        use_context = len(context_channels) > 0
+        self.use_context = use_context
+
+        context_pad_length = num_layers + 1 - len(context_channels)
+        context_channels = context_channels + [0] * context_pad_length
+        self.context_channels = context_channels
+
+        if use_context:
+            has_context = [c > 0 for c in context_channels]
+            self.has_context = has_context
+            self.context_id = [sum(has_context[:i]) for i in range(len(has_context))]
 
         assert (
             len(factors) == num_layers
@@ -735,7 +749,7 @@ class UNet1d(nn.Module):
         self.to_in = nn.Sequential(
             Rearrange("b c (l p) -> b (c p) l", p=patch_size),
             CrossEmbed1d(
-                in_channels=in_channels * patch_size,
+                in_channels=(in_channels + context_channels[0]) * patch_size,
                 out_channels=channels,
                 kernel_sizes=kernel_sizes_init,
                 stride=1,
@@ -757,7 +771,7 @@ class UNet1d(nn.Module):
         self.downsamples = nn.ModuleList(
             [
                 DownsampleBlock1d(
-                    in_channels=channels * multipliers[i],
+                    in_channels=channels * multipliers[i] + context_channels[i + 1],
                     out_channels=channels * multipliers[i + 1],
                     time_context_features=time_context_features,
                     num_layers=num_blocks[i],
@@ -784,10 +798,11 @@ class UNet1d(nn.Module):
             attention_features=attention_features,
         )
 
+        context_channels = context_channels + [0]  # Upsample skips first context
         self.upsamples = nn.ModuleList(
             [
                 UpsampleBlock1d(
-                    in_channels=channels * multipliers[i + 1],
+                    in_channels=channels * multipliers[i + 1] + context_channels[i + 2],
                     out_channels=channels * multipliers[i],
                     time_context_features=time_context_features,
                     num_layers=num_blocks[i] + (1 if attentions[i] else 0),
@@ -809,7 +824,7 @@ class UNet1d(nn.Module):
 
         self.to_out = nn.Sequential(
             ResnetBlock1d(
-                in_channels=channels,
+                in_channels=channels + context_channels[1],
                 out_channels=channels,
                 num_groups=resnet_groups,
                 time_context_features=time_context_features,
@@ -822,21 +837,54 @@ class UNet1d(nn.Module):
             Rearrange("b (c p) l -> b c (l p)", p=patch_size),
         )
 
-    def forward(self, x: Tensor, t: Tensor):
+    def add_context(
+        self, x: Tensor, context_list: Optional[Sequence[Tensor]] = None, layer: int = 0
+    ) -> Tensor:
+        """Concatenates context to x, if present, and checks that shape is correct"""
+        use_context = self.use_context and self.has_context[layer]
+        if not use_context:
+            return x
+        assert exists(context_list), "Missing context"
+        # Get context index (skipping zero channel contexts)
+        context_id = self.context_id[layer]
+        # Get context
+        context = context_list[context_id]
+        message = f"Missing context for layer {layer} at index {context_id}"
+        assert exists(context), message
+        # Check channels
+        channels = self.context_channels[layer]
+        message = f"Expected context with {channels} channels at index {context_id}"
+        assert context.shape[1] == channels, message
+        # Check length
+        length = x.shape[2]
+        message = f"Expected context length of {length} at index {context_id}"
+        assert context.shape[2] == length, message
+        # Concatenate context
+        return torch.cat([x, context], dim=1)
 
+    def forward(
+        self,
+        x: Tensor,
+        t: Tensor,
+        *,
+        context: Optional[Sequence[Tensor]] = None,
+    ):
+        x = self.add_context(x, context)
         x = self.to_in(x)
         t = self.to_time(t)
         skips_list = []
 
-        for downsample in self.downsamples:
+        for i, downsample in enumerate(self.downsamples):
+            x = self.add_context(x, context, layer=i + 1)
             x, skips = downsample(x, t)
             skips_list += [skips]
 
         x = self.bottleneck(x, t)
 
-        for upsample in self.upsamples:
+        for i, upsample in enumerate(self.upsamples):
             skips = skips_list.pop()
             x = upsample(x, skips, t)
+            x = self.add_context(x, context, layer=len(self.upsamples) - i)
 
         x = self.to_out(x)  # t?
 
