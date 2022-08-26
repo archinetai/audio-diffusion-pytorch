@@ -12,4 +12,4 @@ from .diffusion import (
     SpanBySpanComposer,
 )
 from .model import AudioAutoEncoderModel, AudioDiffusionModel, Model1d
-from .modules import AutoEncoder1d, UNet1d
+from .modules import AutoEncoder1d, Encoder1d, UNet1d

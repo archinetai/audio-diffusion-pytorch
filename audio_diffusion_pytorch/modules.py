@@ -480,6 +480,7 @@ class DownsampleBlock1d(nn.Module):
         kernel_multiplier: int = 2,
         use_pre_downsample: bool = True,
         use_skip: bool = False,
+        extract_channels: int = 0,
         use_attention: bool = False,
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
@@ -490,6 +491,7 @@ class DownsampleBlock1d(nn.Module):
         self.use_pre_downsample = use_pre_downsample
         self.use_skip = use_skip
         self.use_attention = use_attention
+        self.use_extract = extract_channels > 0
 
         channels = out_channels if use_pre_downsample else in_channels
 
@@ -525,6 +527,14 @@ class DownsampleBlock1d(nn.Module):
                 multiplier=attention_multiplier,
             )
 
+        if self.use_extract:
+            num_extract_groups = min(num_groups, extract_channels)
+            self.to_extracted = ResnetBlock1d(
+                in_channels=out_channels,
+                out_channels=extract_channels,
+                num_groups=num_extract_groups,
+            )
+
     def forward(
         self, x: Tensor, t: Optional[Tensor] = None
     ) -> Union[Tuple[Tensor, List[Tensor]], Tensor]:
@@ -543,6 +553,10 @@ class DownsampleBlock1d(nn.Module):
 
         if not self.use_pre_downsample:
             x = self.downsample(x)
+
+        if self.use_extract:
+            extracted = self.to_extracted(x)
+            return x, extracted
 
         return (x, skips) if self.use_skip else x
 
@@ -693,7 +707,9 @@ class BottleneckBlock1d(nn.Module):
         return x
 
 
-""" UNets """
+"""
+UNet
+"""
 
 
 class UNet1d(nn.Module):
@@ -738,7 +754,7 @@ class UNet1d(nn.Module):
         if use_context:
             has_context = [c > 0 for c in context_channels]
             self.has_context = has_context
-            self.context_id = [sum(has_context[:i]) for i in range(len(has_context))]
+            self.context_ids = [sum(has_context[:i]) for i in range(len(has_context))]
 
         assert (
             len(factors) == num_layers
@@ -846,7 +862,7 @@ class UNet1d(nn.Module):
             return x
         assert exists(context_list), "Missing context"
         # Get context index (skipping zero channel contexts)
-        context_id = self.context_id[layer]
+        context_id = self.context_ids[layer]
         # Get context
         context = context_list[context_id]
         message = f"Missing context for layer {layer} at index {context_id}"
@@ -891,7 +907,81 @@ class UNet1d(nn.Module):
         return x
 
 
-""" Autoencoders """
+"""
+Encoder
+"""
+
+
+class Encoder1d(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        channels: int,
+        patch_size: int,
+        resnet_groups: int,
+        kernel_multiplier_downsample: int,
+        kernel_sizes_init: Sequence[int],
+        multipliers: Sequence[int],
+        factors: Sequence[int],
+        num_blocks: Sequence[int],
+        extract_channels: Sequence[int],
+    ):
+        super().__init__()
+
+        num_layers = len(extract_channels)
+        self.num_layers = num_layers
+
+        use_extract = [channels > 0 for channels in extract_channels]
+        self.use_extract = use_extract
+
+        assert (
+            len(multipliers) >= num_layers + 1
+            and len(factors) >= num_layers
+            and len(num_blocks) >= num_layers
+        )
+
+        self.to_in = nn.Sequential(
+            Rearrange("b c (l p) -> b (c p) l", p=patch_size),
+            CrossEmbed1d(
+                in_channels=in_channels * patch_size,
+                out_channels=channels,
+                kernel_sizes=kernel_sizes_init,
+                stride=1,
+            ),
+        )
+
+        self.downsamples = nn.ModuleList(
+            [
+                DownsampleBlock1d(
+                    in_channels=channels * multipliers[i],
+                    out_channels=channels * multipliers[i + 1],
+                    factor=factors[i],
+                    kernel_multiplier=kernel_multiplier_downsample,
+                    num_groups=resnet_groups,
+                    num_layers=num_blocks[i],
+                    extract_channels=extract_channels[i],
+                )
+                for i in range(num_layers)
+            ]
+        )
+
+    def forward(self, x: Tensor) -> List[Tensor]:
+        x = self.to_in(x)
+        channels_list = []
+
+        for downsample, use_extract in zip(self.downsamples, self.use_extract):
+            if use_extract:
+                x, channels = downsample(x)
+                channels_list += [channels]
+            else:
+                x = downsample(x)
+
+        return channels_list
+
+
+"""
+Autoencoder
+"""
 
 
 def gaussian_sample(mean: Tensor, logvar: Tensor) -> Tensor:
