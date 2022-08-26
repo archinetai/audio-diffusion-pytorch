@@ -40,6 +40,7 @@ class Model1d(nn.Module):
         diffusion_sigma_data: int,
         diffusion_dynamic_threshold: float,
         out_channels: Optional[int] = None,
+        context_channels: Optional[Sequence[int]] = None,
         use_autoencoder: bool = False,
         autoencoder: Optional[AutoEncoder1d] = None,
         autoencoder_scale: float = 1.0,
@@ -72,6 +73,7 @@ class Model1d(nn.Module):
             use_skip_scale=use_skip_scale,
             use_attention_bottleneck=use_attention_bottleneck,
             out_channels=out_channels,
+            context_channels=context_channels,
         )
 
         self.diffusion = Diffusion(
@@ -81,13 +83,18 @@ class Model1d(nn.Module):
             dynamic_threshold=diffusion_dynamic_threshold,
         )
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
         if self.use_autoencoder:
             x = self.autoencoder_scale * self.autoencoder.encode(x)  # type: ignore
-        return self.diffusion(x)
+        return self.diffusion(x, **kwargs)
 
     def sample(
-        self, noise: Tensor, num_steps: int, sigma_schedule: Schedule, sampler: Sampler
+        self,
+        noise: Tensor,
+        num_steps: int,
+        sigma_schedule: Schedule,
+        sampler: Sampler,
+        **kwargs
     ) -> Tensor:
         diffusion_sampler = DiffusionSampler(
             diffusion=self.diffusion,
@@ -95,7 +102,7 @@ class Model1d(nn.Module):
             sigma_schedule=sigma_schedule,
             num_steps=num_steps,
         )
-        x = diffusion_sampler(noise)
+        x = diffusion_sampler(noise, **kwargs)
 
         if self.use_autoencoder:
             x = (1.0 / self.autoencoder_scale) * self.autoencoder.decode(x)
