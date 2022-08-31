@@ -174,6 +174,7 @@ y_long = composer(y, keep_start=True) # [1, 1, 98304]
 - [x] Add (variational) autoencoder option to compress audio before diffusion.
 - [x] Fix inpainting and make it work with ADPM2 sampler.
 - [x] Add trainer with experiments.
+- [x] Add diffusion upsampler.
 
 ## Appreciation
 

@@ -152,7 +152,7 @@ class AudioDiffusionUpsampler(Model1d):
             context_channels=[in_channels],
         )
 
-        super().__init__(*args, {**default_kwargs, **kwargs})  # type: ignore
+        super().__init__(*args, **{**default_kwargs, **kwargs})  # type: ignore
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
         # Downsample by picking every `factor` item
