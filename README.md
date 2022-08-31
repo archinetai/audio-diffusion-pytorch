@@ -19,6 +19,7 @@ https://colab.research.google.com/gist/flavioschneider/39c6454bfc2d03dc7d0c5c9d8
 
 ## Usage
 
+### Generation
 ```py
 from audio_diffusion_pytorch import AudioDiffusionModel
 
@@ -35,6 +36,28 @@ sampled = model.sample(
     noise=noise,
     num_steps=5 # Suggested range: 2-100
 ) # [2, 1, 262144]
+```
+
+### Upsampling
+```py
+from audio_diffusion_pytorch import AudioDiffusionUpsampler
+
+upsampler = AudioDiffusionUpsampler(
+    factor=4,
+    in_channels=1
+)
+
+# Train on high frequency data
+x = torch.randn(2, 1, 2 ** 18) # [batch, in_channels, samples]
+loss = upsampler(x)
+loss.backward()
+
+# Given start undersampled source, samples upsampled source
+start = torch.randn(1, 1, 2 ** 16)
+sampled = upsampler.sample(
+    start=start,
+    num_steps=5 # Suggested range: 2-100
+)
 ```
 
 ## Usage with Components
@@ -129,6 +152,8 @@ composer = SpanBySpanComposer(
 )
 y_long = composer(y, keep_start=True) # [1, 1, 98304]
 ```
+
+
 
 
 ## Experiments

@@ -1,5 +1,6 @@
 from typing import Optional, Sequence
 
+import torch
 from torch import Tensor, nn
 
 from .diffusion import (
@@ -111,7 +112,7 @@ class AudioDiffusionModel(Model1d):
             use_skip_scale=True,
             diffusion_sigma_distribution=LogNormalDistribution(mean=-3.0, std=1.0),
             diffusion_sigma_data=0.1,
-            diffusion_dynamic_threshold=0.95,
+            diffusion_dynamic_threshold=0.0,
         )
 
         super().__init__(*args, **{**default_kwargs, **kwargs})
@@ -122,3 +123,50 @@ class AudioDiffusionModel(Model1d):
             sampler=ADPM2Sampler(rho=1.0),
         )
         return super().sample(*args, **{**default_kwargs, **kwargs})
+
+
+class AudioDiffusionUpsampler(Model1d):
+    def __init__(self, factor: int, in_channels: int = 1, *args, **kwargs):
+        self.factor = factor
+
+        default_kwargs = dict(
+            in_channels=in_channels,
+            channels=128,
+            patch_size=16,
+            kernel_sizes_init=[1, 3, 7],
+            multipliers=[1, 2, 4, 4, 4, 4, 4],
+            factors=[4, 4, 4, 2, 2, 2],
+            num_blocks=[2, 2, 2, 2, 2, 2],
+            attentions=[False, False, False, True, True, True],
+            attention_heads=8,
+            attention_features=64,
+            attention_multiplier=2,
+            use_attention_bottleneck=True,
+            resnet_groups=8,
+            kernel_multiplier_downsample=2,
+            use_nearest_upsample=False,
+            use_skip_scale=True,
+            diffusion_sigma_distribution=LogNormalDistribution(mean=-3.0, std=1.0),
+            diffusion_sigma_data=0.1,
+            diffusion_dynamic_threshold=0.0,
+            context_channels=[in_channels],
+        )
+
+        super().__init__(*args, {**default_kwargs, **kwargs})  # type: ignore
+
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
+        # Downsample by picking every `factor` item
+        downsampled = x[:, :, :: self.factor]
+        # Upsample by interleaving to get context
+        context = torch.repeat_interleave(downsampled, repeats=self.factor, dim=2)
+        return self.diffusion(x, context=[context], **kwargs)
+
+    def sample(self, start: Tensor, *args, **kwargs):  # type: ignore
+        context = torch.repeat_interleave(start, repeats=self.factor, dim=2)
+        noise = torch.randn_like(context)
+        default_kwargs = dict(
+            context=[context],
+            sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0),
+            sampler=ADPM2Sampler(rho=1.0),
+        )
+        return super().sample(noise, *args, **{**default_kwargs, **kwargs})  # type: ignore # noqa
