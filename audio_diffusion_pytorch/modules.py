@@ -1,9 +1,9 @@
-from math import log, pi
+from math import pi
 from typing import List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
-from einops import rearrange, reduce
+from einops import rearrange
 from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many, repeat_many
 from einops_exts.torch import EinopsToAndFrom
@@ -420,19 +420,6 @@ Time Embeddings
 """
 
 
-class SinusoidalPositionalEmbedding(nn.Module):
-    def __init__(self, dim: int):
-        super().__init__()
-        self.dim = dim
-
-    def forward(self, x: Tensor) -> Tensor:
-        half_dim = self.dim // 2
-        factor = log(10000) / (half_dim - 1)
-        embedding = torch.exp(torch.arange(half_dim, device=x.device) * -factor)
-        embedding = rearrange(x, "i -> i 1") * rearrange(embedding, "j -> 1 j")
-        return torch.cat((embedding.sin(), embedding.cos()), dim=-1)
-
-
 class LearnedPositionalEmbedding(nn.Module):
     """Used for continuous time"""
 
@@ -450,16 +437,10 @@ class LearnedPositionalEmbedding(nn.Module):
         return fouriered
 
 
-def TimePositionalEmbedding(
-    dim: int, out_features: int, use_learned: bool
-) -> nn.Module:
+def TimePositionalEmbedding(dim: int, out_features: int) -> nn.Module:
     return nn.Sequential(
-        LearnedPositionalEmbedding(dim)
-        if use_learned
-        else SinusoidalPositionalEmbedding(dim),
-        nn.Linear(
-            in_features=dim + 1 if use_learned else dim, out_features=out_features
-        ),
+        LearnedPositionalEmbedding(dim),
+        nn.Linear(in_features=dim + 1, out_features=out_features),
     )
 
 
@@ -728,7 +709,6 @@ class UNet1d(nn.Module):
         resnet_groups: int,
         kernel_multiplier_downsample: int,
         kernel_sizes_init: Sequence[int],
-        use_learned_time_embedding: bool,
         use_nearest_upsample: bool,
         use_skip_scale: bool,
         use_attention_bottleneck: bool,
@@ -773,11 +753,7 @@ class UNet1d(nn.Module):
         )
 
         self.to_time = nn.Sequential(
-            TimePositionalEmbedding(
-                dim=channels,
-                out_features=time_context_features,
-                use_learned=use_learned_time_embedding,
-            ),
+            TimePositionalEmbedding(dim=channels, out_features=time_context_features),
             nn.SiLU(),
             nn.Linear(
                 in_features=time_context_features, out_features=time_context_features
@@ -977,136 +953,3 @@ class Encoder1d(nn.Module):
                 x = downsample(x)
 
         return channels_list
-
-
-"""
-Autoencoder
-"""
-
-
-def gaussian_sample(mean: Tensor, logvar: Tensor) -> Tensor:
-    std = torch.exp(0.5 * logvar)
-    eps = torch.randn_like(std)
-    sample = mean + std * eps
-    return sample
-
-
-def kl_loss(mean: Tensor, logvar: Tensor) -> Tensor:
-    losses = reduce(1 + logvar - mean ** 2 - logvar.exp(), "b ... -> b", "sum")
-    loss = reduce(-0.5 * losses, "b -> 1", "mean")
-    return loss
-
-
-class AutoEncoder1d(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        bottleneck_channels: int,
-        channels: int,
-        patch_size: int,
-        multipliers: Sequence[int],
-        factors: Sequence[int],
-        num_blocks: Sequence[int],
-        resnet_groups: int,
-        loss_kl_weight: float,
-        kernel_multiplier_downsample: int = 2,
-    ):
-        super().__init__()
-
-        num_layers = len(multipliers) - 1
-        self.num_layers = num_layers
-        self.loss_kl_weight = loss_kl_weight
-
-        assert len(factors) == num_layers and len(num_blocks) == num_layers
-
-        self.to_in = nn.Sequential(
-            Rearrange("b c (l p) -> b (c p) l", p=patch_size),
-            Conv1d(
-                in_channels=in_channels * patch_size,
-                out_channels=channels,
-                kernel_size=1,
-            ),
-        )
-
-        self.downsamples = nn.ModuleList(
-            [
-                DownsampleBlock1d(
-                    in_channels=channels * multipliers[i],
-                    out_channels=channels * multipliers[i + 1],
-                    num_layers=num_blocks[i],
-                    factor=factors[i],
-                    kernel_multiplier=kernel_multiplier_downsample,
-                    num_groups=resnet_groups,
-                )
-                for i in range(num_layers)
-            ]
-        )
-
-        self.pre_bottleneck = Conv1d(
-            in_channels=channels * multipliers[-1],
-            out_channels=bottleneck_channels * 2,
-            kernel_size=1,
-        )
-
-        self.post_bottleneck = Conv1d(
-            in_channels=bottleneck_channels,
-            out_channels=channels * multipliers[-1],
-            kernel_size=1,
-        )
-
-        self.upsamples = nn.ModuleList(
-            [
-                UpsampleBlock1d(
-                    in_channels=channels * multipliers[i + 1],
-                    out_channels=channels * multipliers[i],
-                    num_layers=num_blocks[i],
-                    factor=factors[i],
-                    num_groups=resnet_groups,
-                )
-                for i in reversed(range(num_layers))
-            ]
-        )
-
-        self.to_out = nn.Sequential(
-            Conv1d(
-                in_channels=channels,
-                out_channels=in_channels * patch_size,
-                kernel_size=1,
-            ),
-            Rearrange("b (c p) l -> b c (l p)", p=patch_size),
-        )
-
-    def encode(
-        self, x: Tensor, *, with_kl_loss: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
-        x = self.to_in(x)
-
-        for downsample in self.downsamples:
-            x = downsample(x)
-
-        mean_and_var = self.pre_bottleneck(x)
-
-        # Chunk channels to mean and log variance and sample in VAE style
-        mean, logvar = torch.chunk(mean_and_var, chunks=2, dim=1)
-        logvar = torch.clamp(logvar, -30.0, 20.0)
-        bottleneck = gaussian_sample(mean, logvar)
-
-        if with_kl_loss:
-            return bottleneck, kl_loss(mean, logvar)
-
-        return bottleneck
-
-    def decode(self, x: Tensor) -> Tensor:
-        x = self.post_bottleneck(x)
-
-        for upsample in self.upsamples:
-            x = upsample(x)
-
-        return self.to_out(x)
-
-    def forward(self, x: Tensor) -> Tensor:
-        """Returns autoencoding loss"""
-        z, kl_loss = self.encode(x, with_kl_loss=True)
-        y = self.decode(z)
-        loss = F.mse_loss(x, y) + kl_loss * self.loss_kl_weight
-        return loss

@@ -22,10 +22,10 @@ https://colab.research.google.com/gist/flavioschneider/39c6454bfc2d03dc7d0c5c9d8
 ```py
 from audio_diffusion_pytorch import AudioDiffusionModel
 
-model = AudioDiffusionModel()
+model = AudioDiffusionModel(in_channels=1)
 
 # Train model with audio sources
-x = torch.randn(2, 1, 2 ** 18) # [batch, channels, samples], 2**18 ≈ 12s of audio at a frequency of 22050
+x = torch.randn(2, 1, 2 ** 18) # [batch, in_channels, samples], 2**18 ≈ 12s of audio at a frequency of 22050Hz
 loss = model(x)
 loss.backward() # Do this many times
 
@@ -46,8 +46,9 @@ from audio_diffusion_pytorch import UNet1d
 # UNet used to denoise our 1D (audio) data
 unet = UNet1d(
     in_channels=1,
-    patch_size=16,
     channels=128,
+    patch_size=16,
+    kernel_sizes_init=[1, 3, 7],
     multipliers=[1, 2, 4, 4, 4, 4, 4],
     factors=[4, 4, 4, 2, 2, 2],
     attentions=[False, False, False, True, True, True],
@@ -55,13 +56,11 @@ unet = UNet1d(
     attention_heads=8,
     attention_features=64,
     attention_multiplier=2,
+    use_attention_bottleneck=True,
     resnet_groups=8,
     kernel_multiplier_downsample=2,
-    kernel_sizes_init=[1, 3, 7],
     use_nearest_upsample=False,
     use_skip_scale=True,
-    use_attention_bottleneck=True,
-    use_learned_time_embedding=True,
 )
 
 x = torch.randn(3, 1, 2 ** 16)
