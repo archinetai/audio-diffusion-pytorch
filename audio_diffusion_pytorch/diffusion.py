@@ -62,6 +62,8 @@ class KarrasSchedule(Schedule):
 
 """ Samplers """
 
+""" Many methods inspired by https://github.com/crowsonkb/k-diffusion/ """
+
 
 class Sampler(nn.Module):
     def forward(
@@ -136,9 +138,35 @@ class KarrasSampler(Sampler):
         return x
 
 
-class ADPM2Sampler(Sampler):
-    """https://github.com/crowsonkb/k-diffusion/blob/master/k_diffusion/sampling.py"""
+class AEulerSampler(Sampler):
+    def get_sigmas(self, sigma: float, sigma_next: float) -> Tuple[float, float]:
+        sigma_up = sqrt(sigma_next ** 2 * (sigma ** 2 - sigma_next ** 2) / sigma ** 2)
+        sigma_down = sqrt(sigma_next ** 2 - sigma_up ** 2)
+        return sigma_up, sigma_down
 
+    def step(self, x: Tensor, fn: Callable, sigma: float, sigma_next: float) -> Tensor:
+        # Sigma steps
+        sigma_up, sigma_down = self.get_sigmas(sigma, sigma_next)
+        # Derivative at sigma (∂x/∂sigma)
+        d = (x - fn(x, sigma=sigma)) / sigma
+        # Euler method
+        x_next = x + d * (sigma_down - sigma)
+        # Add randomness
+        x_next = x_next + torch.randn_like(x) * sigma_up
+        print(sigma_up)
+        return x_next
+
+    def forward(
+        self, noise: Tensor, fn: Callable, sigmas: Tensor, num_steps: int
+    ) -> Tensor:
+        x = sigmas[0] * noise
+        # Denoise to sample
+        for i in range(num_steps - 1):
+            x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+        return x
+
+
+class ADPM2Sampler(Sampler):
     """https://www.desmos.com/calculator/jbxjlqd9mb"""
 
     def __init__(self, rho: float = 1.0):

@@ -1,5 +1,6 @@
 from .diffusion import (
     ADPM2Sampler,
+    AEulerSampler,
     Diffusion,
     DiffusionInpainter,
     DiffusionSampler,
