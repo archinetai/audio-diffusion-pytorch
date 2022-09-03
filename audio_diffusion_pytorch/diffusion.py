@@ -153,7 +153,6 @@ class AEulerSampler(Sampler):
         x_next = x + d * (sigma_down - sigma)
         # Add randomness
         x_next = x_next + torch.randn_like(x) * sigma_up
-        print(sigma_up)
         return x_next
 
     def forward(

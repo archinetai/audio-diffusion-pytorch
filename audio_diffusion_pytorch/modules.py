@@ -3,7 +3,7 @@ from typing import List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
-from einops import rearrange
+from einops import rearrange, reduce
 from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many, repeat_many
 from einops_exts.torch import EinopsToAndFrom
@@ -23,6 +23,17 @@ def Conv1d(*args, **kwargs) -> nn.Module:
 
 def ConvTranspose1d(*args, **kwargs) -> nn.Module:
     return nn.ConvTranspose1d(*args, **kwargs)
+
+
+class ConvMean1d(nn.Module):
+    def __init__(self, num_means: int, *args, **kwargs):
+        super().__init__()
+        self.convs = nn.ModuleList([Conv1d(*args, **kwargs) for _ in range(num_means)])
+
+    def forward(self, x: Tensor) -> Tensor:
+        xs = torch.stack([conv(x) for conv in self.convs])
+        x = reduce(xs, "n b c t -> b c t", "mean")
+        return x
 
 
 def Downsample1d(
@@ -713,6 +724,7 @@ class UNet1d(nn.Module):
         use_skip_scale: bool,
         use_attention_bottleneck: bool,
         out_channels: Optional[int] = None,
+        out_means: int = 1,
         context_channels: Optional[Sequence[int]] = None,
     ):
         super().__init__()
@@ -821,7 +833,8 @@ class UNet1d(nn.Module):
                 num_groups=resnet_groups,
                 time_context_features=time_context_features,
             ),
-            Conv1d(
+            ConvMean1d(
+                num_means=out_means,
                 in_channels=channels,
                 out_channels=out_channels * patch_size,
                 kernel_size=1,
