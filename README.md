@@ -176,12 +176,14 @@ y_long = composer(y, keep_start=True) # [1, 1, 98304]
 - [x] Fix inpainting and make it work with ADPM2 sampler.
 - [x] Add trainer with experiments.
 - [x] Add diffusion upsampler.
+- [x] Add ancestral euler sampler `AEulerSampler`.
 
 ## Appreciation
 
-* [ETH Zurich](https://inf.ethz.ch/) for the compute, [Zhijing Jin](https://zhijing-jin.com/), [Mrinmaya Sachan](http://www.mrinmaya.io/), and [Bernhard Schoelkopf](https://is.mpg.de/~bs) for supervising this Thesis.
+* [StabilityAI](https://stability.ai/) for the compute, [Zach](https://github.com/zqevans) and everyone else from [HarmonAI](https://www.harmonai.org/) for the interesting research discussions.
+* [ETH Zurich](https://inf.ethz.ch/) for the resources, [Zhijing Jin](https://zhijing-jin.com/), [Mrinmaya Sachan](http://www.mrinmaya.io/), and [Bernhard Schoelkopf](https://is.mpg.de/~bs) for supervising this Thesis.
 * [Phil Wang](https://github.com/lucidrains) for the beautiful open source contributions on [diffusion](https://github.com/lucidrains/denoising-diffusion-pytorch) and [Imagen](https://github.com/lucidrains/imagen-pytorch).
-* [Katherine Crowson](https://github.com/crowsonkb) for the experiments with [k-diffusion](https://github.com/crowsonkb/k-diffusion) and discovering the insane `ADPM2` sampler.
+* [Katherine Crowson](https://github.com/crowsonkb) for the experiments with [k-diffusion](https://github.com/crowsonkb/k-diffusion) and the insane collection of samplers.
 
 ## Citations
 
