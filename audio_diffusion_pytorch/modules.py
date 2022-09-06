@@ -473,6 +473,7 @@ class DownsampleBlock1d(nn.Module):
         use_pre_downsample: bool = True,
         use_skip: bool = False,
         extract_channels: int = 0,
+        context_channels: int = 0,
         use_attention: bool = False,
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
@@ -484,6 +485,7 @@ class DownsampleBlock1d(nn.Module):
         self.use_skip = use_skip
         self.use_attention = use_attention
         self.use_extract = extract_channels > 0
+        self.use_context = context_channels > 0
 
         channels = out_channels if use_pre_downsample else in_channels
 
@@ -497,12 +499,12 @@ class DownsampleBlock1d(nn.Module):
         self.blocks = nn.ModuleList(
             [
                 ResnetBlock1d(
-                    in_channels=channels,
+                    in_channels=channels + (context_channels if i == 0 else 0),
                     out_channels=channels,
                     num_groups=num_groups,
                     time_context_features=time_context_features,
                 )
-                for _ in range(num_layers)
+                for i in range(num_layers)
             ]
         )
 
@@ -528,11 +530,14 @@ class DownsampleBlock1d(nn.Module):
             )
 
     def forward(
-        self, x: Tensor, t: Optional[Tensor] = None
+        self, x: Tensor, t: Optional[Tensor] = None, context: Optional[Tensor] = None
     ) -> Union[Tuple[Tensor, List[Tensor]], Tensor]:
 
         if self.use_pre_downsample:
             x = self.downsample(x)
+
+        if self.use_context and exists(context):
+            x = torch.cat([x, context], dim=1)
 
         skips = []
         for block in self.blocks:
@@ -774,9 +779,10 @@ class UNet1d(nn.Module):
         self.downsamples = nn.ModuleList(
             [
                 DownsampleBlock1d(
-                    in_channels=channels * multipliers[i] + context_channels[i + 1],
+                    in_channels=channels * multipliers[i],
                     out_channels=channels * multipliers[i + 1],
                     time_context_features=time_context_features,
+                    context_channels=context_channels[i + 1],
                     num_layers=num_blocks[i],
                     factor=factors[i],
                     kernel_multiplier=kernel_multiplier_downsample,
@@ -839,13 +845,13 @@ class UNet1d(nn.Module):
             Rearrange("b (c p) l -> b c (l p)", p=patch_size),
         )
 
-    def add_context(
-        self, x: Tensor, context_list: Optional[Sequence[Tensor]] = None, layer: int = 0
-    ) -> Tensor:
+    def get_context(
+        self, context_list: Optional[Sequence[Tensor]] = None, layer: int = 0
+    ) -> Optional[Tensor]:
         """Concatenates context to x, if present, and checks that shape is correct"""
         use_context = self.use_context and self.has_context[layer]
         if not use_context:
-            return x
+            return None
         assert exists(context_list), "Missing context"
         # Get context index (skipping zero channel contexts)
         context_id = self.context_ids[layer]
@@ -857,12 +863,7 @@ class UNet1d(nn.Module):
         channels = self.context_channels[layer]
         message = f"Expected context with {channels} channels at index {context_id}"
         assert context.shape[1] == channels, message
-        # Check length
-        length = x.shape[2]
-        message = f"Expected context length of {length} at index {context_id}"
-        assert context.shape[2] == length, message
-        # Concatenate context
-        return torch.cat([x, context], dim=1)
+        return context
 
     def forward(
         self,
@@ -871,14 +872,15 @@ class UNet1d(nn.Module):
         *,
         context: Optional[Sequence[Tensor]] = None,
     ):
-        x = self.add_context(x, context)
+        c = self.get_context(context)
+        x = torch.cat([x, c], dim=1) if exists(c) else x
         x = self.to_in(x)
         t = self.to_time(t)
         skips_list = []
 
         for i, downsample in enumerate(self.downsamples):
-            x = self.add_context(x, context, layer=i + 1)
-            x, skips = downsample(x, t)
+            c = self.get_context(context, layer=i + 1)
+            x, skips = downsample(x, t, c)
             skips_list += [skips]
 
         x = self.bottleneck(x, t)
