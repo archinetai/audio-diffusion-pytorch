@@ -26,7 +26,7 @@ from audio_diffusion_pytorch import AudioDiffusionModel
 model = AudioDiffusionModel(in_channels=1)
 
 # Train model with audio sources
-x = torch.randn(2, 1, 2 ** 18) # [batch, in_channels, samples], 2**18 ≈ 12s of audio at a frequency of 22050Hz
+x = torch.randn(2, 1, 2 ** 18) # [batch, in_channels, samples], 2**18 ≈ 12s of audio at a frequency of 22050
 loss = model(x)
 loss.backward() # Do this many times
 
@@ -34,8 +34,8 @@ loss.backward() # Do this many times
 noise = torch.randn(2, 1, 2 ** 18)
 sampled = model.sample(
     noise=noise,
-    num_steps=5 # Suggested range: 2-100
-) # [2, 1, 262144]
+    num_steps=5 # Suggested range: 2-50
+) # [2, 1, 2 ** 18]
 ```
 
 ### Upsampling
@@ -43,21 +43,45 @@ sampled = model.sample(
 from audio_diffusion_pytorch import AudioDiffusionUpsampler
 
 upsampler = AudioDiffusionUpsampler(
-    factor=4,
-    in_channels=1
+    in_channels=1,
+    factor=8,
 )
 
 # Train on high frequency data
-x = torch.randn(2, 1, 2 ** 18) # [batch, in_channels, samples]
+x = torch.randn(2, 1, 2 ** 18)
 loss = upsampler(x)
 loss.backward()
 
 # Given start undersampled source, samples upsampled source
-start = torch.randn(1, 1, 2 ** 16)
-sampled = upsampler.sample(
-    start=start,
-    num_steps=5 # Suggested range: 2-100
+undersampled = torch.randn(1, 1, 2 ** 15)
+upsampled = upsampler.sample(
+    undersampled,
+    num_steps=5
+) # [1, 1, 2 ** 18]
+```
+
+### Autoencoding
+```py
+autoencoder = AudioDiffusionAutoencoder(
+    in_channels=1,
+    encoder_depth=4,
+    encoder_channels=32
 )
+
+# Train on audio samples
+x = torch.randn(2, 1, 2 ** 18)
+loss = autoencoder(x)
+loss.backward()
+
+# Encode audio source into latent
+x = torch.randn(2, 1, 2 ** 18)
+latent = autoencoder.encode(x) # [2, 32, 128]
+
+# Decode latent by diffusion sampling
+decoded = autoencoder.decode(
+    latent,
+    num_steps=5
+) # [2, 32, 2**18]
 ```
 
 ## Usage with Components
