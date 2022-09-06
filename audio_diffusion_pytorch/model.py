@@ -1,3 +1,4 @@
+from math import prod
 from typing import Optional, Sequence
 
 import torch
@@ -13,7 +14,9 @@ from .diffusion import (
     Sampler,
     Schedule,
 )
-from .modules import UNet1d
+from .modules import Encoder1d, ResnetBlock1d, UNet1d
+
+""" Diffusion Classes (generic for 1d data) """
 
 
 class Model1d(nn.Module):
@@ -47,8 +50,6 @@ class Model1d(nn.Module):
             in_channels=in_channels,
             channels=channels,
             patch_size=patch_size,
-            resnet_groups=resnet_groups,
-            kernel_multiplier_downsample=kernel_multiplier_downsample,
             kernel_sizes_init=kernel_sizes_init,
             multipliers=multipliers,
             factors=factors,
@@ -57,9 +58,11 @@ class Model1d(nn.Module):
             attention_heads=attention_heads,
             attention_features=attention_features,
             attention_multiplier=attention_multiplier,
+            use_attention_bottleneck=use_attention_bottleneck,
+            resnet_groups=resnet_groups,
+            kernel_multiplier_downsample=kernel_multiplier_downsample,
             use_nearest_upsample=use_nearest_upsample,
             use_skip_scale=use_skip_scale,
-            use_attention_bottleneck=use_attention_bottleneck,
             out_channels=out_channels,
             context_channels=context_channels,
         )
@@ -91,10 +94,110 @@ class Model1d(nn.Module):
         return diffusion_sampler(noise, **kwargs)
 
 
+class DiffusionUpsampler1d(Model1d):
+    def __init__(self, factor: int, in_channels: int, *args, **kwargs):
+        self.factor = factor
+        default_kwargs = dict(
+            in_channels=in_channels,
+            context_channels=[in_channels],
+        )
+        super().__init__(*args, **{**default_kwargs, **kwargs})  # type: ignore
+
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
+        # Downsample by picking every `factor` item
+        downsampled = x[:, :, :: self.factor]
+        # Upsample by interleaving to get context
+        context = torch.repeat_interleave(downsampled, repeats=self.factor, dim=2)
+        return self.diffusion(x, context=[context], **kwargs)
+
+    def sample(self, undersampled: Tensor, *args, **kwargs):  # type: ignore
+        # Upsample context by interleaving
+        context = torch.repeat_interleave(undersampled, repeats=self.factor, dim=2)
+        noise = torch.randn_like(context)
+        default_kwargs = dict(context=[context])
+        return super().sample(noise, **{**default_kwargs, **kwargs})  # type: ignore
+
+
+class DiffusionAutoencoder1d(Model1d):
+    def __init__(
+        self,
+        in_channels: int,
+        channels: int,
+        patch_size: int,
+        kernel_sizes_init: Sequence[int],
+        multipliers: Sequence[int],
+        factors: Sequence[int],
+        num_blocks: Sequence[int],
+        resnet_groups: int,
+        kernel_multiplier_downsample: int,
+        encoder_depth: int,
+        encoder_channels: int,
+        context_channels: int,
+        **kwargs
+    ):
+        super().__init__(
+            in_channels=in_channels,
+            channels=channels,
+            patch_size=patch_size,
+            kernel_sizes_init=kernel_sizes_init,
+            multipliers=multipliers,
+            factors=factors,
+            num_blocks=num_blocks,
+            resnet_groups=resnet_groups,
+            kernel_multiplier_downsample=kernel_multiplier_downsample,
+            context_channels=[0] * encoder_depth + [context_channels],
+            **kwargs
+        )
+
+        self.in_channels = in_channels
+        self.encoder_factor = patch_size * prod(factors[0:encoder_depth])
+
+        self.encoder = Encoder1d(
+            in_channels=in_channels,
+            channels=channels,
+            patch_size=patch_size,
+            kernel_sizes_init=kernel_sizes_init,
+            multipliers=multipliers,
+            factors=factors,
+            num_blocks=num_blocks,
+            resnet_groups=resnet_groups,
+            kernel_multiplier_downsample=kernel_multiplier_downsample,
+            extract_channels=[0] * (encoder_depth - 1) + [encoder_channels],
+        )
+
+        self.to_context = ResnetBlock1d(
+            in_channels=encoder_channels,
+            out_channels=context_channels,
+            num_groups=resnet_groups,
+        )
+
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
+        latent = self.encode(x)
+        context = self.to_context(latent)
+        return self.diffusion(x, context=[context], **kwargs)
+
+    def encode(self, x: Tensor) -> Tensor:
+        x = self.encoder(x)[-1]
+        latent = torch.tanh(x)
+        return latent
+
+    def decode(self, latent: Tensor, **kwargs) -> Tensor:
+        b, length = latent.shape[0], latent.shape[2] * self.encoder_factor
+        # Compute noise by inferring shape from latent length
+        noise = torch.randn(b, self.in_channels, length).to(latent)
+        # Compute context form latent
+        context = self.to_context(latent)
+        default_kwargs = dict(context=[context])
+        # Decode by sampling while conditioning on latent context
+        return super().sample(noise, **{**default_kwargs, **kwargs})  # type: ignore
+
+
+""" Audio Diffusion Classes (specific for 1d audio data) """
+
+
 class AudioDiffusionModel(Model1d):
     def __init__(self, *args, **kwargs):
         default_kwargs = dict(
-            in_channels=1,
             channels=128,
             patch_size=16,
             kernel_sizes_init=[1, 3, 7],
@@ -125,10 +228,8 @@ class AudioDiffusionModel(Model1d):
         return super().sample(*args, **{**default_kwargs, **kwargs})
 
 
-class AudioDiffusionUpsampler(Model1d):
-    def __init__(self, factor: int, in_channels: int = 1, *args, **kwargs):
-        self.factor = factor
-
+class AudioDiffusionUpsampler(DiffusionUpsampler1d):
+    def __init__(self, in_channels: int, *args, **kwargs):
         default_kwargs = dict(
             in_channels=in_channels,
             channels=128,
@@ -154,19 +255,45 @@ class AudioDiffusionUpsampler(Model1d):
 
         super().__init__(*args, **{**default_kwargs, **kwargs})  # type: ignore
 
-    def forward(self, x: Tensor, **kwargs) -> Tensor:
-        # Downsample by picking every `factor` item
-        downsampled = x[:, :, :: self.factor]
-        # Upsample by interleaving to get context
-        context = torch.repeat_interleave(downsampled, repeats=self.factor, dim=2)
-        return self.diffusion(x, context=[context], **kwargs)
-
-    def sample(self, start: Tensor, *args, **kwargs):  # type: ignore
-        context = torch.repeat_interleave(start, repeats=self.factor, dim=2)
-        noise = torch.randn_like(context)
+    def sample(self, *args, **kwargs):
         default_kwargs = dict(
-            context=[context],
             sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0),
             sampler=ADPM2Sampler(rho=1.0),
         )
-        return super().sample(noise, *args, **{**default_kwargs, **kwargs})  # type: ignore # noqa
+        return super().sample(*args, **{**default_kwargs, **kwargs})
+
+
+class AudioDiffusionAutoencoder(DiffusionAutoencoder1d):
+    def __init__(self, *args, **kwargs):
+        default_kwargs = dict(
+            channels=128,
+            patch_size=16,
+            kernel_sizes_init=[1, 3, 7],
+            multipliers=[1, 2, 4, 4, 4, 4, 4],
+            factors=[4, 4, 4, 2, 2, 2],
+            num_blocks=[2, 2, 2, 2, 2, 2],
+            attentions=[False, False, False, True, True, True],
+            attention_heads=8,
+            attention_features=64,
+            attention_multiplier=2,
+            use_attention_bottleneck=True,
+            resnet_groups=8,
+            kernel_multiplier_downsample=2,
+            use_nearest_upsample=False,
+            use_skip_scale=True,
+            encoder_depth=4,
+            encoder_channels=32,
+            context_channels=512,
+            diffusion_sigma_distribution=LogNormalDistribution(mean=-3.0, std=1.0),
+            diffusion_sigma_data=0.1,
+            diffusion_dynamic_threshold=0.0,
+        )
+
+        super().__init__(*args, **{**default_kwargs, **kwargs})  # type: ignore
+
+    def decode(self, *args, **kwargs):
+        default_kwargs = dict(
+            sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0),
+            sampler=ADPM2Sampler(rho=1.0),
+        )
+        return super().decode(*args, **{**default_kwargs, **kwargs})

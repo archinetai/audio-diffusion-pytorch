@@ -12,5 +12,12 @@ from .diffusion import (
     Schedule,
     SpanBySpanComposer,
 )
-from .model import AudioDiffusionModel, AudioDiffusionUpsampler, Model1d
+from .model import (
+    AudioDiffusionAutoencoder,
+    AudioDiffusionModel,
+    AudioDiffusionUpsampler,
+    DiffusionAutoencoder1d,
+    DiffusionUpsampler1d,
+    Model1d,
+)
 from .modules import Encoder1d, UNet1d
