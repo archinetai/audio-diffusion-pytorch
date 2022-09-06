@@ -62,6 +62,8 @@ upsampled = upsampler.sample(
 
 ### Autoencoding
 ```py
+from audio_diffusion_pytorch import AudioDiffusionAutoencoder
+
 autoencoder = AudioDiffusionAutoencoder(
     in_channels=1,
     encoder_depth=4,
