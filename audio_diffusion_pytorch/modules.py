@@ -724,7 +724,6 @@ class UNet1d(nn.Module):
         use_skip_scale: bool,
         use_attention_bottleneck: bool,
         out_channels: Optional[int] = None,
-        out_means: int = 1,
         context_channels: Optional[Sequence[int]] = None,
     ):
         super().__init__()
@@ -802,11 +801,10 @@ class UNet1d(nn.Module):
             attention_features=attention_features,
         )
 
-        context_channels = context_channels + [0]  # Upsample skips first context
         self.upsamples = nn.ModuleList(
             [
                 UpsampleBlock1d(
-                    in_channels=channels * multipliers[i + 1] + context_channels[i + 2],
+                    in_channels=channels * multipliers[i + 1],
                     out_channels=channels * multipliers[i],
                     time_context_features=time_context_features,
                     num_layers=num_blocks[i] + (1 if attentions[i] else 0),
@@ -833,8 +831,7 @@ class UNet1d(nn.Module):
                 num_groups=resnet_groups,
                 time_context_features=time_context_features,
             ),
-            ConvMean1d(
-                num_means=out_means,
+            Conv1d(
                 in_channels=channels,
                 out_channels=out_channels * patch_size,
                 kernel_size=1,
@@ -889,7 +886,6 @@ class UNet1d(nn.Module):
         for i, upsample in enumerate(self.upsamples):
             skips = skips_list.pop()
             x = upsample(x, skips, t)
-            x = self.add_context(x, context, layer=len(self.upsamples) - i)
 
         x = self.to_out(x)  # t?
 
