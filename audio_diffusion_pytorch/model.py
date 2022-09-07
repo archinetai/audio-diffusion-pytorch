@@ -1,5 +1,6 @@
+import random
 from math import prod
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Union
 
 import torch
 from torch import Tensor, nn
@@ -15,6 +16,7 @@ from .diffusion import (
     Schedule,
 )
 from .modules import Encoder1d, ResnetBlock1d, UNet1d
+from .utils import default, to_list
 
 """ Diffusion Classes (generic for 1d data) """
 
@@ -95,24 +97,32 @@ class Model1d(nn.Module):
 
 
 class DiffusionUpsampler1d(Model1d):
-    def __init__(self, factor: int, in_channels: int, *args, **kwargs):
-        self.factor = factor
+    def __init__(
+        self, factor: Union[int, Sequence[int]], in_channels: int, *args, **kwargs
+    ):
+        self.factor = to_list(factor)
         default_kwargs = dict(
             in_channels=in_channels,
             context_channels=[in_channels],
         )
         super().__init__(*args, **{**default_kwargs, **kwargs})  # type: ignore
 
-    def forward(self, x: Tensor, **kwargs) -> Tensor:
+    def forward(self, x: Tensor, factor: Optional[int] = None, **kwargs) -> Tensor:
+        # Either user provides factor or we pick one at random
+        factor = default(factor, random.choice(self.factor))
         # Downsample by picking every `factor` item
-        downsampled = x[:, :, :: self.factor]
+        downsampled = x[:, :, ::factor]
         # Upsample by interleaving to get context
-        context = torch.repeat_interleave(downsampled, repeats=self.factor, dim=2)
+        context = torch.repeat_interleave(downsampled, repeats=factor, dim=2)
         return self.diffusion(x, context=[context], **kwargs)
 
-    def sample(self, undersampled: Tensor, *args, **kwargs):  # type: ignore
+    def sample(  # type: ignore
+        self, undersampled: Tensor, factor: Optional[int] = None, *args, **kwargs
+    ):
+        # Either user provides factor or we pick the first
+        factor = default(factor, self.factor[0])
         # Upsample context by interleaving
-        context = torch.repeat_interleave(undersampled, repeats=self.factor, dim=2)
+        context = torch.repeat_interleave(undersampled, repeats=factor, dim=2)
         noise = torch.randn_like(context)
         default_kwargs = dict(context=[context])
         return super().sample(noise, **{**default_kwargs, **kwargs})  # type: ignore
