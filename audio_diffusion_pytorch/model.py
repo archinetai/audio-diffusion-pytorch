@@ -1,5 +1,4 @@
 import random
-from math import prod
 from typing import Optional, Sequence, Union
 
 import torch
@@ -16,7 +15,7 @@ from .diffusion import (
     Schedule,
 )
 from .modules import Encoder1d, ResnetBlock1d, UNet1d
-from .utils import default, to_list
+from .utils import default, prod, to_list
 
 """ Diffusion Classes (generic for 1d data) """
 

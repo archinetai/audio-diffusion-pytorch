@@ -1,3 +1,4 @@
+from functools import reduce
 from inspect import isfunction
 from typing import Callable, List, Optional, Sequence, TypeVar, Union
 
@@ -30,3 +31,7 @@ def to_list(val: Union[T, Sequence[T]]) -> List[T]:
     if isinstance(val, list):
         return val
     return [val]  # type: ignore
+
+
+def prod(vals: Sequence[int]) -> int:
+    return reduce(lambda x, y: x * y, vals)
