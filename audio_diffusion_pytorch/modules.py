@@ -25,17 +25,6 @@ def ConvTranspose1d(*args, **kwargs) -> nn.Module:
     return nn.ConvTranspose1d(*args, **kwargs)
 
 
-class ConvMean1d(nn.Module):
-    def __init__(self, num_means: int, *args, **kwargs):
-        super().__init__()
-        self.convs = nn.ModuleList([Conv1d(*args, **kwargs) for _ in range(num_means)])
-
-    def forward(self, x: Tensor) -> Tensor:
-        xs = torch.stack([conv(x) for conv in self.convs])
-        x = reduce(xs, "n b c t -> b c t", "mean")
-        return x
-
-
 def Downsample1d(
     in_channels: int, out_channels: int, factor: int, kernel_multiplier: int = 2
 ) -> nn.Module:
@@ -709,6 +698,40 @@ UNet
 """
 
 
+class ConvOut1d(nn.Module):
+    def __init__(
+        self, in_channels: int, out_channels: int, kernel_sizes: Sequence[int]
+    ):
+        super().__init__()
+
+        self.block1 = nn.ModuleList(
+            Conv1d(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=kernel_size,
+                padding=(kernel_size - 1) // 2,
+            )
+            for kernel_size in kernel_sizes
+        )
+
+        self.block2 = nn.ModuleList(
+            Conv1d(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=kernel_size,
+                padding=(kernel_size - 1) // 2,
+            )
+            for kernel_size in kernel_sizes
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        xs = torch.stack([x] + [conv(x) for conv in self.block1])
+        x = reduce(xs, "n b c t -> b c t", "sum")
+        xs = torch.stack([x] + [conv(x) for conv in self.block2])
+        x = reduce(xs, "n b c t -> b c t", "sum")
+        return x
+
+
 class UNet1d(nn.Module):
     def __init__(
         self,
@@ -730,6 +753,7 @@ class UNet1d(nn.Module):
         use_attention_bottleneck: bool,
         out_channels: Optional[int] = None,
         context_channels: Optional[Sequence[int]] = None,
+        kernel_sizes_out: Optional[Sequence[int]] = None,
     ):
         super().__init__()
 
@@ -835,7 +859,6 @@ class UNet1d(nn.Module):
                 in_channels=channels + context_channels[1],
                 out_channels=channels,
                 num_groups=resnet_groups,
-                time_context_features=time_context_features,
             ),
             Conv1d(
                 in_channels=channels,
@@ -843,6 +866,13 @@ class UNet1d(nn.Module):
                 kernel_size=1,
             ),
             Rearrange("b (c p) l -> b c (l p)", p=patch_size),
+            ConvOut1d(
+                in_channels=out_channels,
+                out_channels=out_channels,
+                kernel_sizes=kernel_sizes_out,
+            )
+            if exists(kernel_sizes_out)
+            else nn.Identity(),
         )
 
     def get_context(

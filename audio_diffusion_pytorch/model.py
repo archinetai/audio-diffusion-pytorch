@@ -44,6 +44,7 @@ class Model1d(nn.Module):
         diffusion_dynamic_threshold: float,
         out_channels: Optional[int] = None,
         context_channels: Optional[Sequence[int]] = None,
+        **kwargs
     ):
         super().__init__()
 
@@ -66,6 +67,7 @@ class Model1d(nn.Module):
             use_skip_scale=use_skip_scale,
             out_channels=out_channels,
             context_channels=context_channels,
+            **kwargs
         )
 
         self.diffusion = Diffusion(
