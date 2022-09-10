@@ -1,5 +1,5 @@
 import random
-from typing import Optional, Sequence, Union
+from typing import Any, Optional, Sequence, Tuple, Union
 
 import torch
 from torch import Tensor, nn
@@ -15,7 +15,7 @@ from .diffusion import (
     Schedule,
 )
 from .modules import Encoder1d, ResnetBlock1d, UNet1d
-from .utils import default, prod, to_list
+from .utils import default, exists, prod, to_list
 
 """ Diffusion Classes (generic for 1d data) """
 
@@ -129,6 +129,13 @@ class DiffusionUpsampler1d(Model1d):
         return super().sample(noise, **{**default_kwargs, **kwargs})  # type: ignore
 
 
+class Bottleneck(nn.Module):
+    """Bottleneck interface (subclass can be provided to DiffusionAutoencoder1d)"""
+
+    def forward(self, x: Tensor) -> Tuple[Tensor, Any]:
+        raise NotImplementedError()
+
+
 class DiffusionAutoencoder1d(Model1d):
     def __init__(
         self,
@@ -144,6 +151,7 @@ class DiffusionAutoencoder1d(Model1d):
         encoder_depth: int,
         encoder_channels: int,
         context_channels: int,
+        bottleneck: Optional[Bottleneck] = None,
         **kwargs
     ):
         super().__init__(
@@ -162,6 +170,7 @@ class DiffusionAutoencoder1d(Model1d):
 
         self.in_channels = in_channels
         self.encoder_factor = patch_size * prod(factors[0:encoder_depth])
+        self.bottleneck = bottleneck
 
         self.encoder = Encoder1d(
             in_channels=in_channels,
@@ -187,9 +196,15 @@ class DiffusionAutoencoder1d(Model1d):
         context = self.to_context(latent)
         return self.diffusion(x, context=[context], **kwargs)
 
-    def encode(self, x: Tensor) -> Tensor:
+    def encode(
+        self, x: Tensor, with_info: bool = False
+    ) -> Union[Tensor, Tuple[Tensor, Any]]:
         x = self.encoder(x)[-1]
         latent = torch.tanh(x)
+        # Apply bottleneck if provided (e.g. quantization module)
+        if exists(self.bottleneck):
+            latent, info = self.bottleneck(latent)
+            return (latent, info) if with_info else latent
         return latent
 
     def decode(self, latent: Tensor, **kwargs) -> Tensor:

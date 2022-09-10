@@ -703,11 +703,12 @@ class ConvOut1d(nn.Module):
         self, in_channels: int, out_channels: int, kernel_sizes: Sequence[int]
     ):
         super().__init__()
+        mid_channels = in_channels * 8
 
         self.block1 = nn.ModuleList(
             Conv1d(
                 in_channels=in_channels,
-                out_channels=out_channels,
+                out_channels=mid_channels,
                 kernel_size=kernel_size,
                 padding=(kernel_size - 1) // 2,
             )
@@ -716,7 +717,7 @@ class ConvOut1d(nn.Module):
 
         self.block2 = nn.ModuleList(
             Conv1d(
-                in_channels=in_channels,
+                in_channels=mid_channels,
                 out_channels=out_channels,
                 kernel_size=kernel_size,
                 padding=(kernel_size - 1) // 2,
@@ -725,9 +726,9 @@ class ConvOut1d(nn.Module):
         )
 
     def forward(self, x: Tensor) -> Tensor:
-        xs = torch.stack([x] + [conv(x) for conv in self.block1])
+        xs = torch.stack([conv(x) for conv in self.block1])
         x = reduce(xs, "n b c t -> b c t", "sum")
-        xs = torch.stack([x] + [conv(x) for conv in self.block2])
+        xs = torch.stack([conv(x) for conv in self.block2])
         x = reduce(xs, "n b c t -> b c t", "sum")
         return x
 

@@ -203,6 +203,8 @@ y_long = composer(y, keep_start=True) # [1, 1, 98304]
 - [x] Add trainer with experiments.
 - [x] Add diffusion upsampler.
 - [x] Add ancestral euler sampler `AEulerSampler`.
+- [x] Add diffusion autoencoder.
+- [x] Add autoencoder bottleneck option for quantization.
 
 ## Appreciation
 
