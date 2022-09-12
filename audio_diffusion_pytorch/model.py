@@ -152,6 +152,7 @@ class DiffusionAutoencoder1d(Model1d):
         encoder_channels: int,
         context_channels: int,
         bottleneck: Optional[Bottleneck] = None,
+        encoder_num_blocks: Optional[Sequence[int]] = None,
         **kwargs
     ):
         super().__init__(
@@ -172,6 +173,10 @@ class DiffusionAutoencoder1d(Model1d):
         self.encoder_factor = patch_size * prod(factors[0:encoder_depth])
         self.bottleneck = bottleneck
 
+        encoder_num_blocks = default(encoder_num_blocks, num_blocks)
+        assert_message = "The number of encoder_num_blocks must match encoder_depth"
+        assert len(encoder_num_blocks) >= encoder_depth, assert_message
+
         self.encoder = Encoder1d(
             in_channels=in_channels,
             channels=channels,
@@ -179,7 +184,7 @@ class DiffusionAutoencoder1d(Model1d):
             kernel_sizes_init=kernel_sizes_init,
             multipliers=multipliers,
             factors=factors,
-            num_blocks=num_blocks,
+            num_blocks=encoder_num_blocks,
             resnet_groups=resnet_groups,
             kernel_multiplier_downsample=kernel_multiplier_downsample,
             extract_channels=[0] * (encoder_depth - 1) + [encoder_channels],
