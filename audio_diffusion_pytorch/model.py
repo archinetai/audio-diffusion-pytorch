@@ -191,10 +191,17 @@ class DiffusionAutoencoder1d(Model1d):
             num_groups=resnet_groups,
         )
 
-    def forward(self, x: Tensor, **kwargs) -> Tensor:
-        latent = self.encode(x)
+    def forward(  # type: ignore
+        self, x: Tensor, with_info: bool = False, **kwargs
+    ) -> Union[Tensor, Tuple[Tensor, Any]]:
+        if with_info:
+            latent, info = self.encode(x, with_info=True)
+        else:
+            latent = self.encode(x)
+
         context = self.to_context(latent)
-        return self.diffusion(x, context=[context], **kwargs)
+        loss = self.diffusion(x, context=[context], **kwargs)
+        return (loss, info) if with_info else loss
 
     def encode(
         self, x: Tensor, with_info: bool = False
