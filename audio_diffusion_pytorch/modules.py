@@ -122,8 +122,13 @@ class ResnetBlock1d(nn.Module):
         num_groups: int,
         dilation: int = 1,
         time_context_features: Optional[int] = None,
+        context_features: Optional[int] = None,
+        context_heads: Optional[int] = None,
+        context_head_features: Optional[int] = None,
     ) -> None:
         super().__init__()
+
+        self.use_context = exists(context_features)
 
         self.to_time_embedding = (
             nn.Sequential(
@@ -143,6 +148,19 @@ class ResnetBlock1d(nn.Module):
             dilation=dilation,
         )
 
+        if self.use_context:
+            assert exists(context_heads) and exists(context_head_features)
+            self.cross_attend = EinopsToAndFrom(
+                "b c l",
+                "b l c",
+                CrossAttention(
+                    features=out_channels,
+                    context_features=context_features,
+                    head_features=context_head_features,
+                    num_heads=context_heads,
+                ),
+            )
+
         self.block2 = ConvBlock1d(
             in_channels=out_channels, out_channels=out_channels, num_groups=num_groups
         )
@@ -153,9 +171,19 @@ class ResnetBlock1d(nn.Module):
             else nn.Identity()
         )
 
-    def forward(self, x: Tensor, time_context: Optional[Tensor] = None) -> Tensor:
+    def forward(
+        self,
+        x: Tensor,
+        time_context: Optional[Tensor] = None,
+        context: Optional[Tensor] = None,
+    ) -> Tensor:
+        assert_message = "You must provide context tokens if context_features > 0"
+        assert not (self.use_context ^ exists(context)), assert_message
 
         h = self.block1(x)
+
+        if self.use_context and exists(context):
+            h = self.cross_attend(h, context=context) + h
 
         # Compute scale and shift from time_context
         scale_shift = None
@@ -385,6 +413,45 @@ class Attention(nn.Module):
         return x
 
 
+class CrossAttention(nn.Module):
+    def __init__(
+        self,
+        features: int,
+        *,
+        context_features: int = None,
+        head_features: int = 64,
+        num_heads: int = 8,
+    ):
+        super().__init__()
+        mid_features = head_features * num_heads
+        context_features = default(context_features, features)
+
+        self.norm_in = LayerNorm(features=features, bias=False)
+        self.norm_context = LayerNorm(features=context_features, bias=False)
+
+        self.to_q = nn.Linear(
+            in_features=features, out_features=mid_features, bias=False
+        )
+        self.to_kv = nn.Linear(
+            in_features=context_features, out_features=mid_features * 2, bias=False
+        )
+        self.attention = AttentionBase(
+            features,
+            num_heads=num_heads,
+            head_features=head_features,
+            use_null_tokens=False,
+        )
+
+    def forward(self, x: Tensor, context: Tensor, mask: Tensor = None) -> Tensor:
+        b, n, d = x.shape
+        x = self.norm_in(x)
+        context = self.norm_context(context)
+        # Queries form x, k and v from context
+        q, k, v = (self.to_q(x), *torch.chunk(self.to_kv(context), chunks=2, dim=-1))
+        x = self.attention(q, k, v, mask=mask)
+        return x
+
+
 """
 Transformer Blocks
 """
@@ -468,6 +535,7 @@ class DownsampleBlock1d(nn.Module):
         attention_features: Optional[int] = None,
         attention_multiplier: Optional[int] = None,
         time_context_features: Optional[int] = None,
+        context_features: Optional[int] = None,
     ):
         super().__init__()
         self.use_pre_downsample = use_pre_downsample
@@ -492,6 +560,9 @@ class DownsampleBlock1d(nn.Module):
                     out_channels=channels,
                     num_groups=num_groups,
                     time_context_features=time_context_features,
+                    context_features=context_features,
+                    context_heads=attention_heads,
+                    context_head_features=attention_features,
                 )
                 for i in range(num_layers)
             ]
@@ -519,18 +590,22 @@ class DownsampleBlock1d(nn.Module):
             )
 
     def forward(
-        self, x: Tensor, t: Optional[Tensor] = None, context: Optional[Tensor] = None
+        self,
+        x: Tensor,
+        t: Optional[Tensor] = None,
+        channels: Optional[Tensor] = None,
+        tokens: Optional[Tensor] = None,
     ) -> Union[Tuple[Tensor, List[Tensor]], Tensor]:
 
         if self.use_pre_downsample:
             x = self.downsample(x)
 
-        if self.use_context and exists(context):
-            x = torch.cat([x, context], dim=1)
+        if self.use_context and exists(channels):
+            x = torch.cat([x, channels], dim=1)
 
         skips = []
         for block in self.blocks:
-            x = block(x, t)
+            x = block(x, t, context=tokens)
             skips += [x] if self.use_skip else []
 
         if self.use_attention:
@@ -566,6 +641,7 @@ class UpsampleBlock1d(nn.Module):
         attention_features: Optional[int] = None,
         attention_multiplier: Optional[int] = None,
         time_context_features: Optional[int] = None,
+        context_features: Optional[int] = None,
     ):
         super().__init__()
 
@@ -589,6 +665,9 @@ class UpsampleBlock1d(nn.Module):
                     out_channels=channels,
                     num_groups=num_groups,
                     time_context_features=time_context_features,
+                    context_features=context_features,
+                    context_heads=attention_heads,
+                    context_head_features=attention_features,
                 )
                 for _ in range(num_layers)
             ]
@@ -622,6 +701,7 @@ class UpsampleBlock1d(nn.Module):
         x: Tensor,
         skips: Optional[List[Tensor]] = None,
         t: Optional[Tensor] = None,
+        tokens: Optional[Tensor] = None,
     ) -> Tensor:
 
         if self.use_pre_upsample:
@@ -629,7 +709,7 @@ class UpsampleBlock1d(nn.Module):
 
         for block in self.blocks:
             x = self.add_skip(x, skip=skips.pop()) if exists(skips) else x
-            x = block(x, t)
+            x = block(x, t, context=tokens)
 
         if self.use_attention:
             x = self.transformer(x)
@@ -650,6 +730,7 @@ class BottleneckBlock1d(nn.Module):
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
         time_context_features: Optional[int] = None,
+        context_features: Optional[int] = None,
     ):
         super().__init__()
 
@@ -664,6 +745,9 @@ class BottleneckBlock1d(nn.Module):
             out_channels=channels,
             num_groups=num_groups,
             time_context_features=time_context_features,
+            context_features=context_features,
+            context_heads=attention_heads,
+            context_head_features=attention_features,
         )
 
         if use_attention:
@@ -683,13 +767,21 @@ class BottleneckBlock1d(nn.Module):
             out_channels=channels,
             num_groups=num_groups,
             time_context_features=time_context_features,
+            context_features=context_features,
+            context_heads=attention_heads,
+            context_head_features=attention_features,
         )
 
-    def forward(self, x: Tensor, t: Optional[Tensor] = None) -> Tensor:
-        x = self.pre_block(x, t)
+    def forward(
+        self,
+        x: Tensor,
+        t: Optional[Tensor] = None,
+        tokens: Optional[Tensor] = None,
+    ) -> Tensor:
+        x = self.pre_block(x, t, context=tokens)
         if self.use_attention:
             x = self.attention(x)
-        x = self.post_block(x, t)
+        x = self.post_block(x, t, context=tokens)
         return x
 
 
@@ -754,6 +846,7 @@ class UNet1d(nn.Module):
         use_attention_bottleneck: bool,
         out_channels: Optional[int] = None,
         context_channels: Optional[Sequence[int]] = None,
+        context_features: Optional[int] = None,
         kernel_sizes_out: Optional[Sequence[int]] = None,
     ):
         super().__init__()
@@ -808,6 +901,7 @@ class UNet1d(nn.Module):
                     out_channels=channels * multipliers[i + 1],
                     time_context_features=time_context_features,
                     context_channels=context_channels[i + 1],
+                    context_features=context_features,
                     num_layers=num_blocks[i],
                     factor=factors[i],
                     kernel_multiplier=kernel_multiplier_downsample,
@@ -826,6 +920,7 @@ class UNet1d(nn.Module):
         self.bottleneck = BottleneckBlock1d(
             channels=channels * multipliers[-1],
             time_context_features=time_context_features,
+            context_features=context_features,
             num_groups=resnet_groups,
             use_attention=use_attention_bottleneck,
             attention_heads=attention_heads,
@@ -838,6 +933,7 @@ class UNet1d(nn.Module):
                     in_channels=channels * multipliers[i + 1],
                     out_channels=channels * multipliers[i],
                     time_context_features=time_context_features,
+                    context_features=context_features,
                     num_layers=num_blocks[i] + (1 if attentions[i] else 0),
                     factor=factors[i],
                     use_nearest=use_nearest_upsample,
@@ -902,23 +998,25 @@ class UNet1d(nn.Module):
         t: Tensor,
         *,
         context: Optional[Sequence[Tensor]] = None,
+        tokens: Optional[Tensor] = None,
     ):
         c = self.get_context(context)
         x = torch.cat([x, c], dim=1) if exists(c) else x
+
         x = self.to_in(x)
         t = self.to_time(t)
         skips_list = []
 
         for i, downsample in enumerate(self.downsamples):
-            c = self.get_context(context, layer=i + 1)
-            x, skips = downsample(x, t, c)
+            channels = self.get_context(context, layer=i + 1)
+            x, skips = downsample(x, t, channels=channels, tokens=tokens)
             skips_list += [skips]
 
-        x = self.bottleneck(x, t)
+        x = self.bottleneck(x, t, tokens=tokens)
 
         for i, upsample in enumerate(self.upsamples):
             skips = skips_list.pop()
-            x = upsample(x, skips, t)
+            x = upsample(x, skips, t, tokens=tokens)
 
         x = self.to_out(x)  # t?
 
