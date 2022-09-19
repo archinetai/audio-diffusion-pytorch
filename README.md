@@ -205,6 +205,7 @@ y_long = composer(y, keep_start=True) # [1, 1, 98304]
 - [x] Add ancestral euler sampler `AEulerSampler`.
 - [x] Add diffusion autoencoder.
 - [x] Add autoencoder bottleneck option for quantization.
+- [x] Add option to provide context tokens (resnet cross attention).
 
 ## Appreciation
 

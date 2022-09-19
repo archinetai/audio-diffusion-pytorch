@@ -5,10 +5,9 @@ import torch
 import torch.nn as nn
 from einops import rearrange, reduce
 from einops.layers.torch import Rearrange
-from einops_exts import rearrange_many, repeat_many
+from einops_exts import rearrange_many
 from einops_exts.torch import EinopsToAndFrom
 from torch import Tensor, einsum
-from torch.nn import functional as F
 
 from .utils import default, exists
 
@@ -23,6 +22,42 @@ def Conv1d(*args, **kwargs) -> nn.Module:
 
 def ConvTranspose1d(*args, **kwargs) -> nn.Module:
     return nn.ConvTranspose1d(*args, **kwargs)
+
+
+class ConvOut1d(nn.Module):
+    def __init__(
+        self, in_channels: int, out_channels: int, kernel_sizes: Sequence[int]
+    ):
+        super().__init__()
+        mid_channels = in_channels * 16
+
+        self.convs_in = nn.ModuleList(
+            Conv1d(
+                in_channels=in_channels,
+                out_channels=mid_channels,
+                kernel_size=kernel_size,
+                padding=(kernel_size - 1) // 2,
+            )
+            for kernel_size in kernel_sizes
+        )
+
+        self.conv_mid = nn.Conv1d(
+            in_channels=mid_channels,
+            out_channels=mid_channels,
+            kernel_size=3,
+            padding=1,
+        )
+
+        self.conv_out = Conv1d(
+            in_channels=mid_channels, out_channels=out_channels, kernel_size=1
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        xs = torch.stack([conv(x) for conv in self.convs_in])
+        x = reduce(xs, "n b c t -> b c t", "sum") + x
+        x = self.conv_mid(x)
+        x = self.conv_out(x)
+        return x
 
 
 def Downsample1d(
@@ -273,25 +308,6 @@ Attention Components
 """
 
 
-class InsertNullTokens(nn.Module):
-    def __init__(self, head_features: int, num_heads: int):
-        super().__init__()
-        self.num_heads = num_heads
-        self.tokens = nn.Parameter(torch.randn(2, head_features))
-
-    def forward(
-        self, k: Tensor, v: Tensor, *, mask: Tensor = None
-    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
-        b = k.shape[0]
-        nk, nv = repeat_many(
-            self.tokens.unbind(dim=-2), "d -> b h 1 d", h=self.num_heads, b=b
-        )
-        k = torch.cat((nk, k), dim=-2)
-        v = torch.cat((nv, v), dim=-2)
-        mask = F.pad(mask, pad=(1, 0), value=True) if exists(mask) else None
-        return k, v, mask
-
-
 def FeedForward1d(channels: int, multiplier: int = 2):
     mid_channels = int(channels * multiplier)
     return nn.Sequential(
@@ -324,19 +340,14 @@ class AttentionBase(nn.Module):
         *,
         head_features: int = 64,
         num_heads: int = 8,
-        use_null_tokens: bool = True,
         out_features: Optional[int] = None,
     ):
         super().__init__()
         self.scale = head_features ** -0.5
         self.num_heads = num_heads
-        self.use_null_tokens = use_null_tokens
         mid_features = head_features * num_heads
         out_features = out_features if exists(out_features) else features
 
-        self.insert_null_tokens = InsertNullTokens(
-            head_features=head_features, num_heads=num_heads
-        )
         self.to_out = nn.Sequential(
             nn.Linear(in_features=mid_features, out_features=out_features, bias=False),
             LayerNorm(features=out_features, bias=False),
@@ -355,10 +366,6 @@ class AttentionBase(nn.Module):
         # Split heads, scale queries
         q, k, v = rearrange_many((q, k, v), "b n (h d) -> b h n d", h=self.num_heads)
         q = q * self.scale
-
-        # Insert null tokens
-        if self.use_null_tokens:
-            k, v, mask = self.insert_null_tokens(k, v, mask=mask)
 
         # Compute similarity matrix with bias and mask
         sim = einsum("... n d, ... m d -> ... n m", q, k)
@@ -402,7 +409,6 @@ class Attention(nn.Module):
             features,
             num_heads=num_heads,
             head_features=head_features,
-            use_null_tokens=False,
             out_features=out_features,
         )
 
@@ -436,10 +442,7 @@ class CrossAttention(nn.Module):
             in_features=context_features, out_features=mid_features * 2, bias=False
         )
         self.attention = AttentionBase(
-            features,
-            num_heads=num_heads,
-            head_features=head_features,
-            use_null_tokens=False,
+            features, num_heads=num_heads, head_features=head_features
         )
 
     def forward(self, x: Tensor, context: Tensor, mask: Tensor = None) -> Tensor:
@@ -556,7 +559,7 @@ class DownsampleBlock1d(nn.Module):
         self.blocks = nn.ModuleList(
             [
                 ResnetBlock1d(
-                    in_channels=channels + (context_channels if i == 0 else 0),
+                    in_channels=channels + context_channels if i == 0 else channels,
                     out_channels=channels,
                     num_groups=num_groups,
                     time_context_features=time_context_features,
@@ -790,41 +793,6 @@ UNet
 """
 
 
-class ConvOut1d(nn.Module):
-    def __init__(
-        self, in_channels: int, out_channels: int, kernel_sizes: Sequence[int]
-    ):
-        super().__init__()
-        mid_channels = in_channels * 8
-
-        self.block1 = nn.ModuleList(
-            Conv1d(
-                in_channels=in_channels,
-                out_channels=mid_channels,
-                kernel_size=kernel_size,
-                padding=(kernel_size - 1) // 2,
-            )
-            for kernel_size in kernel_sizes
-        )
-
-        self.block2 = nn.ModuleList(
-            Conv1d(
-                in_channels=mid_channels,
-                out_channels=out_channels,
-                kernel_size=kernel_size,
-                padding=(kernel_size - 1) // 2,
-            )
-            for kernel_size in kernel_sizes
-        )
-
-    def forward(self, x: Tensor) -> Tensor:
-        xs = torch.stack([conv(x) for conv in self.block1])
-        x = reduce(xs, "n b c t -> b c t", "sum")
-        xs = torch.stack([conv(x) for conv in self.block2])
-        x = reduce(xs, "n b c t -> b c t", "sum")
-        return x
-
-
 class UNet1d(nn.Module):
     def __init__(
         self,
@@ -953,7 +921,7 @@ class UNet1d(nn.Module):
 
         self.to_out = nn.Sequential(
             ResnetBlock1d(
-                in_channels=channels + context_channels[1],
+                in_channels=channels,
                 out_channels=channels,
                 num_groups=resnet_groups,
             ),
