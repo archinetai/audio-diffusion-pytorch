@@ -25,15 +25,13 @@ def ConvTranspose1d(*args, **kwargs) -> nn.Module:
 
 
 class ConvOut1d(nn.Module):
-    def __init__(
-        self, in_channels: int, out_channels: int, kernel_sizes: Sequence[int]
-    ):
+    def __init__(self, channels: int, kernel_sizes: Sequence[int]):
         super().__init__()
-        mid_channels = in_channels * 16
+        mid_channels = channels * 16
 
         self.convs_in = nn.ModuleList(
             Conv1d(
-                in_channels=in_channels,
+                in_channels=channels,
                 out_channels=mid_channels,
                 kernel_size=kernel_size,
                 padding=(kernel_size - 1) // 2,
@@ -49,14 +47,15 @@ class ConvOut1d(nn.Module):
         )
 
         self.conv_out = Conv1d(
-            in_channels=mid_channels, out_channels=out_channels, kernel_size=1
+            in_channels=mid_channels, out_channels=channels, kernel_size=1
         )
 
     def forward(self, x: Tensor) -> Tensor:
+        skip = x
         xs = torch.stack([conv(x) for conv in self.convs_in])
-        x = reduce(xs, "n b c t -> b c t", "sum") + x
+        x = reduce(xs, "n b c t -> b c t", "sum")
         x = self.conv_mid(x)
-        x = self.conv_out(x)
+        x = self.conv_out(x) + skip
         return x
 
 
@@ -932,8 +931,7 @@ class UNet1d(nn.Module):
             ),
             Rearrange("b (c p) l -> b c (l p)", p=patch_size),
             ConvOut1d(
-                in_channels=out_channels,
-                out_channels=out_channels,
+                channels=out_channels,
                 kernel_sizes=kernel_sizes_out,
             )
             if exists(kernel_sizes_out)
