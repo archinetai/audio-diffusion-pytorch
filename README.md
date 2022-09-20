@@ -86,6 +86,35 @@ decoded = autoencoder.decode(
 ) # [2, 32, 2**18]
 ```
 
+
+### Conditional Generation
+```py
+from audio_diffusion_pytorch import AudioDiffusionConditional
+
+model = AudioDiffusionConditional(
+    in_channels=1,
+    embedding_max_length=512,
+    embedding_features=768,
+    embedding_mask_proba=0.1 # Conditional dropout of batch elements
+)
+
+# Train on pairs of audio and embedding data (e.g. from a transformer output)
+x = torch.randn(2, 1, 2 ** 18)
+embedding = torch.randn(2, 512, 768)
+loss = model(x, embedding=embedding)
+loss.backward()
+
+# Given start embedding and noise sample new source
+embedding = torch.randn(1, 512, 768)
+noise = torch.randn(1, 1, 2 ** 18)
+sampled = model.sample(
+    noise,
+    embedding=embedding,
+    embedding_scale=5.0, # Classifier-free guidance scale
+    num_steps=5
+) # [1, 1, 2 ** 18]
+```
+
 ## Usage with Components
 
 ### UNet1d
@@ -206,6 +235,7 @@ y_long = composer(y, keep_start=True) # [1, 1, 98304]
 - [x] Add diffusion autoencoder.
 - [x] Add autoencoder bottleneck option for quantization.
 - [x] Add option to provide context tokens (resnet cross attention).
+- [x] Add conditional model with classifier-free guidance.
 
 ## Appreciation
 

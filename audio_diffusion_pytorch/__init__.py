@@ -14,10 +14,11 @@ from .diffusion import (
 )
 from .model import (
     AudioDiffusionAutoencoder,
+    AudioDiffusionConditional,
     AudioDiffusionModel,
     AudioDiffusionUpsampler,
     DiffusionAutoencoder1d,
     DiffusionUpsampler1d,
     Model1d,
 )
-from .modules import Encoder1d, UNet1d
+from .modules import Encoder1d, UNet1d, UNetConditional1d

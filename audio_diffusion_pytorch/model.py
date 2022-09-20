@@ -14,61 +14,28 @@ from .diffusion import (
     Sampler,
     Schedule,
 )
-from .modules import Encoder1d, ResnetBlock1d, UNet1d
+from .modules import Encoder1d, ResnetBlock1d, UNet1d, UNetConditional1d
 from .utils import default, exists, prod, to_list
 
-""" Diffusion Classes (generic for 1d data) """
+"""
+Diffusion Classes (generic for 1d data)
+"""
 
 
 class Model1d(nn.Module):
     def __init__(
         self,
-        in_channels: int,
-        channels: int,
-        patch_size: int,
-        kernel_sizes_init: Sequence[int],
-        multipliers: Sequence[int],
-        factors: Sequence[int],
-        num_blocks: Sequence[int],
-        attentions: Sequence[bool],
-        attention_heads: int,
-        attention_features: int,
-        attention_multiplier: int,
-        use_attention_bottleneck: bool,
-        resnet_groups: int,
-        kernel_multiplier_downsample: int,
-        use_nearest_upsample: bool,
-        use_skip_scale: bool,
         diffusion_sigma_distribution: Distribution,
         diffusion_sigma_data: int,
         diffusion_dynamic_threshold: float,
-        out_channels: Optional[int] = None,
-        context_channels: Optional[Sequence[int]] = None,
+        use_classifier_free_guidance: bool = False,
         **kwargs
     ):
         super().__init__()
 
-        self.unet = UNet1d(
-            in_channels=in_channels,
-            channels=channels,
-            patch_size=patch_size,
-            kernel_sizes_init=kernel_sizes_init,
-            multipliers=multipliers,
-            factors=factors,
-            num_blocks=num_blocks,
-            attentions=attentions,
-            attention_heads=attention_heads,
-            attention_features=attention_features,
-            attention_multiplier=attention_multiplier,
-            use_attention_bottleneck=use_attention_bottleneck,
-            resnet_groups=resnet_groups,
-            kernel_multiplier_downsample=kernel_multiplier_downsample,
-            use_nearest_upsample=use_nearest_upsample,
-            use_skip_scale=use_skip_scale,
-            out_channels=out_channels,
-            context_channels=context_channels,
-            **kwargs
-        )
+        UNet = UNetConditional1d if use_classifier_free_guidance else UNet1d
+
+        self.unet = UNet(**kwargs)
 
         self.diffusion = Diffusion(
             net=self.unet,
@@ -114,18 +81,18 @@ class DiffusionUpsampler1d(Model1d):
         # Downsample by picking every `factor` item
         downsampled = x[:, :, ::factor]
         # Upsample by interleaving to get context
-        context = torch.repeat_interleave(downsampled, repeats=factor, dim=2)
-        return self.diffusion(x, context=[context], **kwargs)
+        channels = torch.repeat_interleave(downsampled, repeats=factor, dim=2)
+        return self.diffusion(x, channels_list=[channels], **kwargs)
 
     def sample(  # type: ignore
         self, undersampled: Tensor, factor: Optional[int] = None, *args, **kwargs
     ):
         # Either user provides factor or we pick the first
         factor = default(factor, self.factor[0])
-        # Upsample context by interleaving
-        context = torch.repeat_interleave(undersampled, repeats=factor, dim=2)
-        noise = torch.randn_like(context)
-        default_kwargs = dict(context=[context])
+        # Upsample channels by interleaving
+        channels = torch.repeat_interleave(undersampled, repeats=factor, dim=2)
+        noise = torch.randn_like(channels)
+        default_kwargs = dict(channels_list=[channels])
         return super().sample(noise, **{**default_kwargs, **kwargs})  # type: ignore
 
 
@@ -166,7 +133,7 @@ class DiffusionAutoencoder1d(Model1d):
             resnet_groups=resnet_groups,
             kernel_multiplier_downsample=kernel_multiplier_downsample,
             context_channels=[0] * encoder_depth + [context_channels],
-            **kwargs
+            **kwargs,
         )
 
         self.in_channels = in_channels
@@ -190,7 +157,7 @@ class DiffusionAutoencoder1d(Model1d):
             extract_channels=[0] * (encoder_depth - 1) + [encoder_channels],
         )
 
-        self.to_context = ResnetBlock1d(
+        self.to_context_channels = ResnetBlock1d(
             in_channels=encoder_channels,
             out_channels=context_channels,
             num_groups=resnet_groups,
@@ -204,8 +171,8 @@ class DiffusionAutoencoder1d(Model1d):
         else:
             latent = self.encode(x)
 
-        context = self.to_context(latent)
-        loss = self.diffusion(x, context=[context], **kwargs)
+        channels = self.to_context_channels(latent)
+        loss = self.diffusion(x, channels_list=[channels], **kwargs)
         return (loss, info) if with_info else loss
 
     def encode(
@@ -224,114 +191,106 @@ class DiffusionAutoencoder1d(Model1d):
         # Compute noise by inferring shape from latent length
         noise = torch.randn(b, self.in_channels, length).to(latent)
         # Compute context form latent
-        context = self.to_context(latent)
-        default_kwargs = dict(context=[context])
-        # Decode by sampling while conditioning on latent context
+        channels = self.to_context_channels(latent)
+        default_kwargs = dict(channels_list=[channels])
+        # Decode by sampling while conditioning on latent channels
         return super().sample(noise, **{**default_kwargs, **kwargs})  # type: ignore
 
 
-""" Audio Diffusion Classes (specific for 1d audio data) """
+"""
+Audio Diffusion Classes (specific for 1d audio data)
+"""
+
+
+def get_default_model_kwargs():
+    return dict(
+        channels=128,
+        patch_size=16,
+        kernel_sizes_init=[1, 3, 7],
+        multipliers=[1, 2, 4, 4, 4, 4, 4],
+        factors=[4, 4, 4, 2, 2, 2],
+        num_blocks=[2, 2, 2, 2, 2, 2],
+        attentions=[False, False, False, True, True, True],
+        attention_heads=8,
+        attention_features=64,
+        attention_multiplier=2,
+        use_attention_bottleneck=True,
+        resnet_groups=8,
+        kernel_multiplier_downsample=2,
+        use_nearest_upsample=False,
+        use_skip_scale=True,
+        diffusion_sigma_distribution=LogNormalDistribution(mean=-3.0, std=1.0),
+        diffusion_sigma_data=0.1,
+        diffusion_dynamic_threshold=0.0,
+    )
+
+
+def get_default_sampling_kwargs():
+    return dict(
+        sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0),
+        sampler=ADPM2Sampler(rho=1.0),
+    )
 
 
 class AudioDiffusionModel(Model1d):
-    def __init__(self, *args, **kwargs):
-        default_kwargs = dict(
-            channels=128,
-            patch_size=16,
-            kernel_sizes_init=[1, 3, 7],
-            multipliers=[1, 2, 4, 4, 4, 4, 4],
-            factors=[4, 4, 4, 2, 2, 2],
-            num_blocks=[2, 2, 2, 2, 2, 2],
-            attentions=[False, False, False, True, True, True],
-            attention_heads=8,
-            attention_features=64,
-            attention_multiplier=2,
-            use_attention_bottleneck=True,
-            resnet_groups=8,
-            kernel_multiplier_downsample=2,
-            use_nearest_upsample=False,
-            use_skip_scale=True,
-            diffusion_sigma_distribution=LogNormalDistribution(mean=-3.0, std=1.0),
-            diffusion_sigma_data=0.1,
-            diffusion_dynamic_threshold=0.0,
-        )
-
-        super().__init__(*args, **{**default_kwargs, **kwargs})
+    def __init__(self, **kwargs):
+        super().__init__(**{**get_default_model_kwargs(), **kwargs})
 
     def sample(self, *args, **kwargs):
-        default_kwargs = dict(
-            sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0),
-            sampler=ADPM2Sampler(rho=1.0),
-        )
-        return super().sample(*args, **{**default_kwargs, **kwargs})
+        return super().sample(*args, **{**get_default_sampling_kwargs(), **kwargs})
 
 
 class AudioDiffusionUpsampler(DiffusionUpsampler1d):
-    def __init__(self, in_channels: int, *args, **kwargs):
+    def __init__(self, in_channels: int, **kwargs):
         default_kwargs = dict(
+            **get_default_model_kwargs(),
             in_channels=in_channels,
-            channels=128,
-            patch_size=16,
-            kernel_sizes_init=[1, 3, 7],
-            multipliers=[1, 2, 4, 4, 4, 4, 4],
-            factors=[4, 4, 4, 2, 2, 2],
-            num_blocks=[2, 2, 2, 2, 2, 2],
-            attentions=[False, False, False, True, True, True],
-            attention_heads=8,
-            attention_features=64,
-            attention_multiplier=2,
-            use_attention_bottleneck=True,
-            resnet_groups=8,
-            kernel_multiplier_downsample=2,
-            use_nearest_upsample=False,
-            use_skip_scale=True,
-            diffusion_sigma_distribution=LogNormalDistribution(mean=-3.0, std=1.0),
-            diffusion_sigma_data=0.1,
-            diffusion_dynamic_threshold=0.0,
             context_channels=[in_channels],
         )
-
-        super().__init__(*args, **{**default_kwargs, **kwargs})  # type: ignore
+        super().__init__(**{**default_kwargs, **kwargs})  # type: ignore
 
     def sample(self, *args, **kwargs):
-        default_kwargs = dict(
-            sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0),
-            sampler=ADPM2Sampler(rho=1.0),
-        )
-        return super().sample(*args, **{**default_kwargs, **kwargs})
+        return super().sample(*args, **{**get_default_sampling_kwargs(), **kwargs})
 
 
 class AudioDiffusionAutoencoder(DiffusionAutoencoder1d):
     def __init__(self, *args, **kwargs):
         default_kwargs = dict(
-            channels=128,
-            patch_size=16,
-            kernel_sizes_init=[1, 3, 7],
-            multipliers=[1, 2, 4, 4, 4, 4, 4],
-            factors=[4, 4, 4, 2, 2, 2],
-            num_blocks=[2, 2, 2, 2, 2, 2],
-            attentions=[False, False, False, True, True, True],
-            attention_heads=8,
-            attention_features=64,
-            attention_multiplier=2,
-            use_attention_bottleneck=True,
-            resnet_groups=8,
-            kernel_multiplier_downsample=2,
-            use_nearest_upsample=False,
-            use_skip_scale=True,
+            **get_default_model_kwargs(),
             encoder_depth=4,
             encoder_channels=32,
             context_channels=512,
-            diffusion_sigma_distribution=LogNormalDistribution(mean=-3.0, std=1.0),
-            diffusion_sigma_data=0.1,
-            diffusion_dynamic_threshold=0.0,
         )
-
         super().__init__(*args, **{**default_kwargs, **kwargs})  # type: ignore
 
     def decode(self, *args, **kwargs):
+        return super().decode(*args, **{**get_default_sampling_kwargs(), **kwargs})
+
+
+class AudioDiffusionConditional(Model1d):
+    def __init__(
+        self,
+        embedding_features: int,
+        embedding_max_length: int,
+        embedding_mask_proba: float = 0.1,
+        **kwargs
+    ):
+        self.embedding_mask_proba = embedding_mask_proba
         default_kwargs = dict(
-            sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0),
-            sampler=ADPM2Sampler(rho=1.0),
+            **get_default_model_kwargs(),
+            context_embedding_features=embedding_features,
+            context_embedding_max_length=embedding_max_length,
+            use_classifier_free_guidance=True,
         )
-        return super().decode(*args, **{**default_kwargs, **kwargs})
+        super().__init__(**{**default_kwargs, **kwargs})
+
+    def forward(self, *args, **kwargs):
+        default_kwargs = dict(embedding_mask_proba=self.embedding_mask_proba)
+        return super().forward(*args, **{**default_kwargs, **kwargs})
+
+    def sample(self, *args, **kwargs):
+        default_kwargs = dict(
+            **get_default_sampling_kwargs(),
+            embedding_scale=5.0,
+        )
+        return super().sample(*args, **{**default_kwargs, **kwargs})

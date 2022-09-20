@@ -1,9 +1,9 @@
 from math import pi
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
-from einops import rearrange, reduce
+from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many
 from einops_exts.torch import EinopsToAndFrom
@@ -155,23 +155,23 @@ class ResnetBlock1d(nn.Module):
         *,
         num_groups: int,
         dilation: int = 1,
-        time_context_features: Optional[int] = None,
-        context_features: Optional[int] = None,
+        context_time_features: Optional[int] = None,
+        context_embedding_features: Optional[int] = None,
         context_heads: Optional[int] = None,
         context_head_features: Optional[int] = None,
     ) -> None:
         super().__init__()
 
-        self.use_context = exists(context_features)
+        self.use_embedding = exists(context_embedding_features)
 
         self.to_time_embedding = (
             nn.Sequential(
                 nn.SiLU(),
                 nn.Linear(
-                    in_features=time_context_features, out_features=out_channels * 2
+                    in_features=context_time_features, out_features=out_channels * 2
                 ),
             )
-            if exists(time_context_features)
+            if exists(context_time_features)
             else None
         )
 
@@ -182,14 +182,14 @@ class ResnetBlock1d(nn.Module):
             dilation=dilation,
         )
 
-        if self.use_context:
+        if self.use_embedding:
             assert exists(context_heads) and exists(context_head_features)
             self.cross_attend = EinopsToAndFrom(
                 "b c l",
                 "b l c",
                 CrossAttention(
                     features=out_channels,
-                    context_features=context_features,
+                    context_features=context_embedding_features,
                     head_features=context_head_features,
                     num_heads=context_heads,
                 ),
@@ -208,21 +208,21 @@ class ResnetBlock1d(nn.Module):
     def forward(
         self,
         x: Tensor,
-        time_context: Optional[Tensor] = None,
-        context: Optional[Tensor] = None,
+        t: Optional[Tensor] = None,
+        embedding: Optional[Tensor] = None,
     ) -> Tensor:
-        assert_message = "You must provide context tokens if context_features > 0"
-        assert not (self.use_context ^ exists(context)), assert_message
+        assert_message = "context embedding required if context_embedding_features > 0"
+        assert not (self.use_embedding ^ exists(embedding)), assert_message
 
         h = self.block1(x)
 
-        if self.use_context and exists(context):
-            h = self.cross_attend(h, context=context) + h
+        if self.use_embedding and exists(embedding):
+            h = self.cross_attend(h, context=embedding) + h
 
-        # Compute scale and shift from time_context
+        # Compute scale and shift from time context
         scale_shift = None
-        if exists(self.to_time_embedding) and exists(time_context):
-            time_embedding = self.to_time_embedding(time_context)
+        if exists(self.to_time_embedding) and exists(t):
+            time_embedding = self.to_time_embedding(t)
             time_embedding = rearrange(time_embedding, "b c -> b c 1")
             scale_shift = time_embedding.chunk(2, dim=1)
 
@@ -536,8 +536,8 @@ class DownsampleBlock1d(nn.Module):
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
         attention_multiplier: Optional[int] = None,
-        time_context_features: Optional[int] = None,
-        context_features: Optional[int] = None,
+        context_time_features: Optional[int] = None,
+        context_embedding_features: Optional[int] = None,
     ):
         super().__init__()
         self.use_pre_downsample = use_pre_downsample
@@ -561,8 +561,8 @@ class DownsampleBlock1d(nn.Module):
                     in_channels=channels + context_channels if i == 0 else channels,
                     out_channels=channels,
                     num_groups=num_groups,
-                    time_context_features=time_context_features,
-                    context_features=context_features,
+                    context_time_features=context_time_features,
+                    context_embedding_features=context_embedding_features,
                     context_heads=attention_heads,
                     context_head_features=attention_features,
                 )
@@ -596,7 +596,7 @@ class DownsampleBlock1d(nn.Module):
         x: Tensor,
         t: Optional[Tensor] = None,
         channels: Optional[Tensor] = None,
-        tokens: Optional[Tensor] = None,
+        embedding: Optional[Tensor] = None,
     ) -> Union[Tuple[Tensor, List[Tensor]], Tensor]:
 
         if self.use_pre_downsample:
@@ -607,7 +607,7 @@ class DownsampleBlock1d(nn.Module):
 
         skips = []
         for block in self.blocks:
-            x = block(x, t, context=tokens)
+            x = block(x, t, embedding=embedding)
             skips += [x] if self.use_skip else []
 
         if self.use_attention:
@@ -642,8 +642,8 @@ class UpsampleBlock1d(nn.Module):
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
         attention_multiplier: Optional[int] = None,
-        time_context_features: Optional[int] = None,
-        context_features: Optional[int] = None,
+        context_time_features: Optional[int] = None,
+        context_embedding_features: Optional[int] = None,
     ):
         super().__init__()
 
@@ -666,8 +666,8 @@ class UpsampleBlock1d(nn.Module):
                     in_channels=channels + skip_channels,
                     out_channels=channels,
                     num_groups=num_groups,
-                    time_context_features=time_context_features,
-                    context_features=context_features,
+                    context_time_features=context_time_features,
+                    context_embedding_features=context_embedding_features,
                     context_heads=attention_heads,
                     context_head_features=attention_features,
                 )
@@ -703,7 +703,7 @@ class UpsampleBlock1d(nn.Module):
         x: Tensor,
         skips: Optional[List[Tensor]] = None,
         t: Optional[Tensor] = None,
-        tokens: Optional[Tensor] = None,
+        embedding: Optional[Tensor] = None,
     ) -> Tensor:
 
         if self.use_pre_upsample:
@@ -711,7 +711,7 @@ class UpsampleBlock1d(nn.Module):
 
         for block in self.blocks:
             x = self.add_skip(x, skip=skips.pop()) if exists(skips) else x
-            x = block(x, t, context=tokens)
+            x = block(x, t, embedding=embedding)
 
         if self.use_attention:
             x = self.transformer(x)
@@ -731,8 +731,8 @@ class BottleneckBlock1d(nn.Module):
         use_attention: bool = False,
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
-        time_context_features: Optional[int] = None,
-        context_features: Optional[int] = None,
+        context_time_features: Optional[int] = None,
+        context_embedding_features: Optional[int] = None,
     ):
         super().__init__()
 
@@ -746,8 +746,8 @@ class BottleneckBlock1d(nn.Module):
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
-            time_context_features=time_context_features,
-            context_features=context_features,
+            context_time_features=context_time_features,
+            context_embedding_features=context_embedding_features,
             context_heads=attention_heads,
             context_head_features=attention_features,
         )
@@ -768,8 +768,8 @@ class BottleneckBlock1d(nn.Module):
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
-            time_context_features=time_context_features,
-            context_features=context_features,
+            context_time_features=context_time_features,
+            context_embedding_features=context_embedding_features,
             context_heads=attention_heads,
             context_head_features=attention_features,
         )
@@ -778,12 +778,12 @@ class BottleneckBlock1d(nn.Module):
         self,
         x: Tensor,
         t: Optional[Tensor] = None,
-        tokens: Optional[Tensor] = None,
+        embedding: Optional[Tensor] = None,
     ) -> Tensor:
-        x = self.pre_block(x, t, context=tokens)
+        x = self.pre_block(x, t, embedding=embedding)
         if self.use_attention:
             x = self.attention(x)
-        x = self.post_block(x, t, context=tokens)
+        x = self.post_block(x, t, embedding=embedding)
         return x
 
 
@@ -813,29 +813,29 @@ class UNet1d(nn.Module):
         use_attention_bottleneck: bool,
         out_channels: Optional[int] = None,
         context_channels: Optional[Sequence[int]] = None,
-        context_features: Optional[int] = None,
+        context_embedding_features: Optional[int] = None,
         kernel_sizes_out: Optional[Sequence[int]] = None,
     ):
         super().__init__()
 
         out_channels = default(out_channels, in_channels)
         context_channels = list(default(context_channels, []))
-        time_context_features = channels * 4
+        context_time_features = channels * 4
 
         num_layers = len(multipliers) - 1
         self.num_layers = num_layers
 
-        use_context = len(context_channels) > 0
-        self.use_context = use_context
+        use_context_channels = len(context_channels) > 0
+        self.use_context_channels = use_context_channels
 
-        context_pad_length = num_layers + 1 - len(context_channels)
-        context_channels = context_channels + [0] * context_pad_length
+        context_channels_pad_length = num_layers + 1 - len(context_channels)
+        context_channels = context_channels + [0] * context_channels_pad_length
         self.context_channels = context_channels
 
-        if use_context:
+        if use_context_channels:
             has_context = [c > 0 for c in context_channels]
             self.has_context = has_context
-            self.context_ids = [sum(has_context[:i]) for i in range(len(has_context))]
+            self.channels_ids = [sum(has_context[:i]) for i in range(len(has_context))]
 
         assert (
             len(factors) == num_layers
@@ -854,10 +854,10 @@ class UNet1d(nn.Module):
         )
 
         self.to_time = nn.Sequential(
-            TimePositionalEmbedding(dim=channels, out_features=time_context_features),
+            TimePositionalEmbedding(dim=channels, out_features=context_time_features),
             nn.SiLU(),
             nn.Linear(
-                in_features=time_context_features, out_features=time_context_features
+                in_features=context_time_features, out_features=context_time_features
             ),
         )
 
@@ -866,9 +866,9 @@ class UNet1d(nn.Module):
                 DownsampleBlock1d(
                     in_channels=channels * multipliers[i],
                     out_channels=channels * multipliers[i + 1],
-                    time_context_features=time_context_features,
+                    context_time_features=context_time_features,
                     context_channels=context_channels[i + 1],
-                    context_features=context_features,
+                    context_embedding_features=context_embedding_features,
                     num_layers=num_blocks[i],
                     factor=factors[i],
                     kernel_multiplier=kernel_multiplier_downsample,
@@ -886,8 +886,8 @@ class UNet1d(nn.Module):
 
         self.bottleneck = BottleneckBlock1d(
             channels=channels * multipliers[-1],
-            time_context_features=time_context_features,
-            context_features=context_features,
+            context_time_features=context_time_features,
+            context_embedding_features=context_embedding_features,
             num_groups=resnet_groups,
             use_attention=use_attention_bottleneck,
             attention_heads=attention_heads,
@@ -899,8 +899,8 @@ class UNet1d(nn.Module):
                 UpsampleBlock1d(
                     in_channels=channels * multipliers[i + 1],
                     out_channels=channels * multipliers[i],
-                    time_context_features=time_context_features,
-                    context_features=context_features,
+                    context_time_features=context_time_features,
+                    context_embedding_features=context_embedding_features,
                     num_layers=num_blocks[i] + (1 if attentions[i] else 0),
                     factor=factors[i],
                     use_nearest=use_nearest_upsample,
@@ -938,55 +938,128 @@ class UNet1d(nn.Module):
             else nn.Identity(),
         )
 
-    def get_context(
-        self, context_list: Optional[Sequence[Tensor]] = None, layer: int = 0
+    def get_channels(
+        self, channels_list: Optional[Sequence[Tensor]] = None, layer: int = 0
     ) -> Optional[Tensor]:
         """Concatenates context to x, if present, and checks that shape is correct"""
-        use_context = self.use_context and self.has_context[layer]
-        if not use_context:
+        use_context_channels = self.use_context_channels and self.has_context[layer]
+        if not use_context_channels:
             return None
-        assert exists(context_list), "Missing context"
-        # Get context index (skipping zero channel contexts)
-        context_id = self.context_ids[layer]
-        # Get context
-        context = context_list[context_id]
-        message = f"Missing context for layer {layer} at index {context_id}"
-        assert exists(context), message
+        assert exists(channels_list), "Missing context"
+        # Get channels index (skipping zero channel contexts)
+        channels_id = self.channels_ids[layer]
+        # Get channels
+        channels = channels_list[channels_id]
+        message = f"Missing context for layer {layer} at index {channels_id}"
+        assert exists(channels), message
         # Check channels
-        channels = self.context_channels[layer]
-        message = f"Expected context with {channels} channels at index {context_id}"
-        assert context.shape[1] == channels, message
-        return context
+        num_channels = self.context_channels[layer]
+        message = f"Expected context with {channels} channels at index {channels_id}"
+        assert channels.shape[1] == num_channels, message
+        return channels
 
     def forward(
         self,
         x: Tensor,
         t: Tensor,
         *,
-        context: Optional[Sequence[Tensor]] = None,
-        tokens: Optional[Tensor] = None,
-    ):
-        c = self.get_context(context)
-        x = torch.cat([x, c], dim=1) if exists(c) else x
+        channels_list: Optional[Sequence[Tensor]] = None,
+        embedding: Optional[Tensor] = None,
+    ) -> Tensor:
+        # Concat channels at layer 0 if provided
+        channels = self.get_channels(channels_list, layer=0)
+        x = torch.cat([x, channels], dim=1) if exists(channels) else x
 
         x = self.to_in(x)
         t = self.to_time(t)
         skips_list = []
 
         for i, downsample in enumerate(self.downsamples):
-            channels = self.get_context(context, layer=i + 1)
-            x, skips = downsample(x, t, channels=channels, tokens=tokens)
+            channels = self.get_channels(channels_list, layer=i + 1)
+            x, skips = downsample(x, t, channels=channels, embedding=embedding)
             skips_list += [skips]
 
-        x = self.bottleneck(x, t, tokens=tokens)
+        x = self.bottleneck(x, t, embedding=embedding)
 
         for i, upsample in enumerate(self.upsamples):
             skips = skips_list.pop()
-            x = upsample(x, skips, t, tokens=tokens)
+            x = upsample(x, skips, t, embedding=embedding)
 
         x = self.to_out(x)  # t?
 
         return x
+
+
+class FixedEmbedding(nn.Module):
+    def __init__(self, max_length: int, features: int):
+        super().__init__()
+        self.max_length = max_length
+        self.embedding = nn.Embedding(max_length, features)
+
+    def forward(self, x: Tensor) -> Tensor:
+        batch_size, length, device = *x.shape[0:2], x.device
+        assert_message = "Input sequence length must be <= max_length"
+        assert length <= self.max_length, assert_message
+        position = torch.arange(length, device=device)
+        fixed_embedding = self.embedding(position)
+        fixed_embedding = repeat(fixed_embedding, "n d -> b n d", b=batch_size)
+        return fixed_embedding
+
+
+def rand_bool(shape: Any, proba: float, device: Any = None) -> Tensor:
+    if proba == 1:
+        return torch.ones(shape, device=device, dtype=torch.bool)
+    elif proba == 0:
+        return torch.zeros(shape, device=device, dtype=torch.bool)
+    else:
+        return torch.bernoulli(torch.full(shape, proba, device=device)).to(torch.bool)
+
+
+class UNetConditional1d(UNet1d):
+    """
+    UNet1d with classifier-free guidance on the token embeddings
+    """
+
+    def __init__(
+        self,
+        context_embedding_features: int,
+        context_embedding_max_length: int,
+        **kwargs,
+    ):
+        super().__init__(
+            context_embedding_features=context_embedding_features, **kwargs
+        )
+        self.fixed_embedding = FixedEmbedding(
+            context_embedding_max_length, context_embedding_features
+        )
+
+    def forward(  # type: ignore
+        self,
+        x: Tensor,
+        t: Tensor,
+        embedding: Tensor,
+        embedding_scale: float = 1.0,
+        embedding_mask_proba: float = 0.0,
+        **kwargs,
+    ) -> Tensor:
+        b, device = embedding.shape[0], embedding.device
+        fixed_embedding = self.fixed_embedding(embedding)
+
+        if embedding_mask_proba > 0.0:
+            # Randomly mask embedding
+            batch_mask = rand_bool(
+                shape=(b, 1, 1), proba=embedding_mask_proba, device=device
+            )
+            embedding = torch.where(batch_mask, fixed_embedding, embedding)
+
+        out = super().forward(x, t, embedding=embedding, **kwargs)
+
+        if embedding_scale != 1.0:
+            # Scale conditional output using classifier-free guidance
+            out_masked = super().forward(x, t, embedding=fixed_embedding, **kwargs)
+            out = out_masked + (out - out_masked) * embedding_scale
+
+        return out
 
 
 """
