@@ -9,7 +9,7 @@ from einops_exts import rearrange_many
 from einops_exts.torch import EinopsToAndFrom
 from torch import Tensor, einsum
 
-from .utils import default, exists
+from .utils import default, exists, prod
 
 """
 Convolutional Blocks
@@ -666,6 +666,7 @@ class UpsampleBlock1d(nn.Module):
         use_skip: bool = False,
         skip_channels: int = 0,
         use_skip_scale: bool = False,
+        extract_channels: int = 0,
         use_attention: bool = False,
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
@@ -675,12 +676,7 @@ class UpsampleBlock1d(nn.Module):
     ):
         super().__init__()
 
-        assert (not use_attention) or (
-            exists(attention_heads)
-            and exists(attention_features)
-            and exists(attention_multiplier)
-        )
-
+        self.use_extract = extract_channels > 0
         self.use_pre_upsample = use_pre_upsample
         self.use_attention = use_attention
         self.use_skip = use_skip
@@ -723,6 +719,14 @@ class UpsampleBlock1d(nn.Module):
             use_nearest=use_nearest,
         )
 
+        if self.use_extract:
+            num_extract_groups = min(num_groups, extract_channels)
+            self.to_extracted = ResnetBlock1d(
+                in_channels=out_channels,
+                out_channels=extract_channels,
+                num_groups=num_extract_groups,
+            )
+
     def add_skip(self, x: Tensor, skip: Tensor) -> Tensor:
         return torch.cat([x, skip * self.skip_scale], dim=1)
 
@@ -732,7 +736,7 @@ class UpsampleBlock1d(nn.Module):
         skips: Optional[List[Tensor]] = None,
         mapping: Optional[Tensor] = None,
         embedding: Optional[Tensor] = None,
-    ) -> Tensor:
+    ) -> Union[Tuple[Tensor, Tensor], Tensor]:
 
         if self.use_pre_upsample:
             x = self.upsample(x)
@@ -746,6 +750,10 @@ class UpsampleBlock1d(nn.Module):
 
         if not self.use_pre_upsample:
             x = self.upsample(x)
+
+        if self.use_extract:
+            extracted = self.to_extracted(x)
+            return x, extracted
 
         return x
 
@@ -1144,11 +1152,11 @@ class UNetConditional1d(UNet1d):
 
 
 """
-Encoder
+Encoders / Decoders
 """
 
 
-class Encoder1d(nn.Module):
+class MultiEncoder1d(nn.Module):
     def __init__(
         self,
         in_channels: int,
@@ -1157,18 +1165,17 @@ class Encoder1d(nn.Module):
         resnet_groups: int,
         kernel_multiplier_downsample: int,
         kernel_sizes_init: Sequence[int],
+        num_layers: int,
+        latent_channels: int,
         multipliers: Sequence[int],
         factors: Sequence[int],
         num_blocks: Sequence[int],
-        extract_channels: Sequence[int],
     ):
         super().__init__()
-
-        num_layers = len(extract_channels)
-        self.num_layers = num_layers
-
-        use_extract = [channels > 0 for channels in extract_channels]
-        self.use_extract = use_extract
+        self.factor = patch_size * prod(factors[0:num_layers])
+        self.channels_list = self.get_channels_list(
+            in_channels, channels, multipliers, num_layers
+        )
 
         assert (
             len(multipliers) >= num_layers + 1
@@ -1195,21 +1202,78 @@ class Encoder1d(nn.Module):
                     kernel_multiplier=kernel_multiplier_downsample,
                     num_groups=resnet_groups,
                     num_layers=num_blocks[i],
-                    extract_channels=extract_channels[i],
                 )
                 for i in range(num_layers)
             ]
         )
 
-    def forward(self, x: Tensor) -> List[Tensor]:
-        x = self.to_in(x)
-        channels_list = []
+        pre_latent_channels = channels * multipliers[num_layers]
 
-        for downsample, use_extract in zip(self.downsamples, self.use_extract):
-            if use_extract:
-                x, channels = downsample(x)
-                channels_list += [channels]
-            else:
-                x = downsample(x)
+        self.to_latent = ResnetBlock1d(
+            in_channels=pre_latent_channels,
+            out_channels=latent_channels,
+            num_groups=resnet_groups,
+        )
 
+        self.from_latent = ResnetBlock1d(
+            in_channels=latent_channels,
+            out_channels=pre_latent_channels,
+            num_groups=resnet_groups,
+        )
+
+        self.upsamples = nn.ModuleList(
+            [
+                UpsampleBlock1d(
+                    in_channels=channels * multipliers[i + 1],
+                    out_channels=channels * multipliers[i],
+                    factor=factors[i],
+                    num_groups=resnet_groups,
+                    num_layers=num_blocks[i],
+                    use_nearest=False,
+                    use_skip=False,
+                    extract_channels=channels * multipliers[i],
+                )
+                for i in reversed(range(num_layers))
+            ]
+        )
+
+        self.to_out = nn.Sequential(
+            ResnetBlock1d(
+                in_channels=channels, out_channels=channels, num_groups=resnet_groups
+            ),
+            Conv1d(
+                in_channels=channels,
+                out_channels=in_channels * patch_size,
+                kernel_size=1,
+            ),
+            Rearrange("b (c p) l -> b c (l p)", p=patch_size),
+        )
+
+    def get_channels_list(
+        self,
+        in_channels: int,
+        channels: int,
+        multipliers: Sequence[int],
+        num_layers: int,
+    ) -> List[int]:
+        channels_list = [in_channels]
+        channels_list += [channels * m for m in multipliers[1 : num_layers + 1]]
         return channels_list
+
+    def encode(self, x: Tensor) -> Tensor:
+        x = self.to_in(x)
+        for downsample in self.downsamples:
+            x = downsample(x)
+        latent = self.to_latent(x)
+        return latent
+
+    def decode(self, latent: Tensor) -> List[Tensor]:
+        x = self.from_latent(latent)
+        channels_list = []
+        channels = x
+        for upsample in self.upsamples:
+            channels_list += [channels]
+            x, channels = upsample(x)
+        x = self.to_out(x)
+        channels_list += [x]
+        return channels_list[::-1]

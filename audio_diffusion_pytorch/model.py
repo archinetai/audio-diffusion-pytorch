@@ -14,8 +14,8 @@ from .diffusion import (
     Sampler,
     Schedule,
 )
-from .modules import Encoder1d, ResnetBlock1d, UNet1d, UNetConditional1d
-from .utils import default, exists, prod, to_list
+from .modules import MultiEncoder1d, UNet1d, UNetConditional1d
+from .utils import default, exists, to_list
 
 """
 Diffusion Classes (generic for 1d data)
@@ -117,11 +117,29 @@ class DiffusionAutoencoder1d(Model1d):
         kernel_multiplier_downsample: int,
         encoder_depth: int,
         encoder_channels: int,
-        context_channels: int,
         bottleneck: Optional[Bottleneck] = None,
         encoder_num_blocks: Optional[Sequence[int]] = None,
         **kwargs
     ):
+        self.in_channels = in_channels
+        encoder_num_blocks = default(encoder_num_blocks, num_blocks)
+        assert_message = "The number of encoder_num_blocks must match encoder_depth"
+        assert len(encoder_num_blocks) >= encoder_depth, assert_message
+
+        multiencoder = MultiEncoder1d(
+            in_channels=in_channels,
+            channels=channels,
+            patch_size=patch_size,
+            num_layers=encoder_depth,
+            latent_channels=encoder_channels,
+            multipliers=multipliers,
+            factors=factors,
+            num_blocks=encoder_num_blocks,
+            kernel_sizes_init=kernel_sizes_init,
+            kernel_multiplier_downsample=kernel_multiplier_downsample,
+            resnet_groups=resnet_groups,
+        )
+
         super().__init__(
             in_channels=in_channels,
             channels=channels,
@@ -132,36 +150,12 @@ class DiffusionAutoencoder1d(Model1d):
             num_blocks=num_blocks,
             resnet_groups=resnet_groups,
             kernel_multiplier_downsample=kernel_multiplier_downsample,
-            context_channels=[0] * encoder_depth + [context_channels],
+            context_channels=multiencoder.channels_list,
             **kwargs,
         )
 
-        self.in_channels = in_channels
-        self.encoder_factor = patch_size * prod(factors[0:encoder_depth])
         self.bottleneck = bottleneck
-
-        encoder_num_blocks = default(encoder_num_blocks, num_blocks)
-        assert_message = "The number of encoder_num_blocks must match encoder_depth"
-        assert len(encoder_num_blocks) >= encoder_depth, assert_message
-
-        self.encoder = Encoder1d(
-            in_channels=in_channels,
-            channels=channels,
-            patch_size=patch_size,
-            kernel_sizes_init=kernel_sizes_init,
-            multipliers=multipliers,
-            factors=factors,
-            num_blocks=encoder_num_blocks,
-            resnet_groups=resnet_groups,
-            kernel_multiplier_downsample=kernel_multiplier_downsample,
-            extract_channels=[0] * (encoder_depth - 1) + [encoder_channels],
-        )
-
-        self.to_context_channels = ResnetBlock1d(
-            in_channels=encoder_channels,
-            out_channels=context_channels,
-            num_groups=resnet_groups,
-        )
+        self.multiencoder = multiencoder
 
     def forward(  # type: ignore
         self, x: Tensor, with_info: bool = False, **kwargs
@@ -171,15 +165,15 @@ class DiffusionAutoencoder1d(Model1d):
         else:
             latent = self.encode(x)
 
-        channels = self.to_context_channels(latent)
-        loss = self.diffusion(x, channels_list=[channels], **kwargs)
+        channels_list = self.multiencoder.decode(latent)
+        loss = self.diffusion(x, channels_list=channels_list, **kwargs)
         return (loss, info) if with_info else loss
 
     def encode(
         self, x: Tensor, with_info: bool = False
     ) -> Union[Tensor, Tuple[Tensor, Any]]:
-        x = self.encoder(x)[-1]
-        latent = torch.tanh(x)
+        latent = self.multiencoder.encode(x)
+        latent = torch.tanh(latent)
         # Apply bottleneck if provided (e.g. quantization module)
         if exists(self.bottleneck):
             latent, info = self.bottleneck(latent)
@@ -187,12 +181,12 @@ class DiffusionAutoencoder1d(Model1d):
         return latent
 
     def decode(self, latent: Tensor, **kwargs) -> Tensor:
-        b, length = latent.shape[0], latent.shape[2] * self.encoder_factor
+        b, length = latent.shape[0], latent.shape[2] * self.multiencoder.factor
         # Compute noise by inferring shape from latent length
         noise = torch.randn(b, self.in_channels, length).to(latent)
         # Compute context form latent
-        channels = self.to_context_channels(latent)
-        default_kwargs = dict(channels_list=[channels])
+        channels_list = self.multiencoder.decode(latent)
+        default_kwargs = dict(channels_list=channels_list)
         # Decode by sampling while conditioning on latent channels
         return super().sample(noise, **{**default_kwargs, **kwargs})  # type: ignore
 
@@ -257,10 +251,7 @@ class AudioDiffusionUpsampler(DiffusionUpsampler1d):
 class AudioDiffusionAutoencoder(DiffusionAutoencoder1d):
     def __init__(self, *args, **kwargs):
         default_kwargs = dict(
-            **get_default_model_kwargs(),
-            encoder_depth=4,
-            encoder_channels=32,
-            context_channels=512,
+            **get_default_model_kwargs(), encoder_depth=4, encoder_channels=64
         )
         super().__init__(*args, **{**default_kwargs, **kwargs})  # type: ignore
 
