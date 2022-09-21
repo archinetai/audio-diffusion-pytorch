@@ -139,6 +139,7 @@ unet = UNet1d(
     kernel_multiplier_downsample=2,
     use_nearest_upsample=False,
     use_skip_scale=True,
+    use_context_time=True,
 )
 
 x = torch.randn(3, 1, 2 ** 16)
@@ -236,6 +237,7 @@ y_long = composer(y, keep_start=True) # [1, 1, 98304]
 - [x] Add autoencoder bottleneck option for quantization.
 - [x] Add option to provide context tokens (resnet cross attention).
 - [x] Add conditional model with classifier-free guidance.
+- [x] Add option to provide context features mapping.
 
 ## Appreciation
 
