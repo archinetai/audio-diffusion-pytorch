@@ -842,6 +842,7 @@ class UNet1d(nn.Module):
         context_channels: Optional[Sequence[int]] = None,
         context_embedding_features: Optional[int] = None,
         use_post_out_block: bool = False,
+        use_sequential_patching: bool = False,
     ):
         super().__init__()
 
@@ -873,8 +874,10 @@ class UNet1d(nn.Module):
             and len(num_blocks) == num_layers
         )
 
+        patching = "b c (p l)" if use_sequential_patching else "b c (l p)"
+
         self.to_in = nn.Sequential(
-            Rearrange("b c (l p) -> b (c p) l", p=patch_size),
+            Rearrange(f"{patching} -> b (c p) l", p=patch_size),
             CrossEmbed1d(
                 in_channels=(in_channels + context_channels[0]) * patch_size,
                 out_channels=channels,
@@ -981,7 +984,7 @@ class UNet1d(nn.Module):
                 out_channels=out_channels * patch_size,
                 kernel_size=1,
             ),
-            Rearrange("b (c p) l -> b c (l p)", p=patch_size),
+            Rearrange(f"b (c p) l -> {patching}", p=patch_size),
         )
 
         if self.use_post_out_block:
