@@ -222,7 +222,7 @@ class ConvOut1d(nn.Module):
         context_mapping_features: Optional[int] = None,
     ):
         super().__init__()
-        mid_channels = in_channels * 32
+        mid_channels = in_channels * 8
 
         self.layers = nn.ModuleList(
             ResnetBlock1d(
