@@ -3,6 +3,7 @@ from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many
@@ -135,8 +136,11 @@ class ResnetBlock1d(nn.Module):
         in_channels: int,
         out_channels: int,
         *,
-        num_groups: int,
+        kernel_size: int = 3,
+        stride: int = 1,
+        padding: int = 1,
         dilation: int = 1,
+        num_groups: int,
         context_mapping_features: Optional[int] = None,
         context_embedding_features: Optional[int] = None,
         context_heads: Optional[int] = None,
@@ -150,8 +154,11 @@ class ResnetBlock1d(nn.Module):
         self.block1 = ConvBlock1d(
             in_channels=in_channels,
             out_channels=out_channels,
-            num_groups=num_groups,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
             dilation=dilation,
+            num_groups=num_groups,
         )
 
         if self.use_mapping:
@@ -211,51 +218,33 @@ class ResnetBlock1d(nn.Module):
 class ConvOut1d(nn.Module):
     def __init__(
         self,
-        channels: int,
-        kernel_sizes: Sequence[int],
+        in_channels: int,
         context_mapping_features: Optional[int] = None,
     ):
         super().__init__()
-        mid_channels = channels * 16
-        self.use_mapping = exists(context_mapping_features)
+        mid_channels = in_channels * 32
 
-        if self.use_mapping:
-            assert exists(context_mapping_features)
-            self.to_scale_shift = MappingToScaleShift(
-                features=context_mapping_features, channels=mid_channels
-            )
-
-        self.convs_in = nn.ModuleList(
-            ConvBlock1d(
-                in_channels=channels,
+        self.layers = nn.ModuleList(
+            ResnetBlock1d(
+                in_channels=in_channels if i == 0 else mid_channels,
                 out_channels=mid_channels,
-                kernel_size=kernel_size,
-                padding=(kernel_size - 1) // 2,
+                kernel_size=3,
+                padding=3 ** (i + 1),
+                dilation=3 ** (i + 1),
                 num_groups=1,
+                context_mapping_features=context_mapping_features,
             )
-            for kernel_size in kernel_sizes
+            for i in range(3)
         )
 
-        self.conv_mid = ConvBlock1d(
-            in_channels=mid_channels,
-            out_channels=mid_channels,
-            kernel_size=3,
-            padding=1,
-            num_groups=8,
-        )
-
-        self.conv_out = Conv1d(
-            in_channels=mid_channels, out_channels=channels, kernel_size=1
+        self.to_out = nn.Conv1d(
+            in_channels=mid_channels, out_channels=in_channels, kernel_size=1
         )
 
     def forward(self, x: Tensor, mapping: Optional[Tensor] = None) -> Tensor:
-        scale_shift = None
-        if self.use_mapping:
-            scale_shift = self.to_scale_shift(mapping)
-        xs = torch.stack([conv(x) for conv in self.convs_in])
-        x = reduce(xs, "n b c t -> b c t", "sum")
-        x = self.conv_mid(x, scale_shift)
-        x = self.conv_out(x)
+        for layer in self.layers:
+            x = F.elu(layer(x, mapping))
+        x = self.to_out(x)
         return x
 
 
@@ -852,7 +841,7 @@ class UNet1d(nn.Module):
         context_features: Optional[int] = None,
         context_channels: Optional[Sequence[int]] = None,
         context_embedding_features: Optional[int] = None,
-        kernel_sizes_out: Optional[Sequence[int]] = None,
+        use_post_out_block: bool = False,
     ):
         super().__init__()
 
@@ -867,7 +856,7 @@ class UNet1d(nn.Module):
         self.use_context_time = use_context_time
         self.use_context_features = use_context_features
         self.use_context_channels = use_context_channels
-        self.use_post_out_block = exists(kernel_sizes_out)
+        self.use_post_out_block = use_post_out_block
 
         context_channels_pad_length = num_layers + 1 - len(context_channels)
         context_channels = context_channels + [0] * context_channels_pad_length
@@ -996,10 +985,9 @@ class UNet1d(nn.Module):
         )
 
         if self.use_post_out_block:
-            assert exists(kernel_sizes_out)
             self.to_post_out = ConvOut1d(
-                channels=out_channels,
-                kernel_sizes=kernel_sizes_out,
+                in_channels=out_channels,
+                context_mapping_features=context_mapping_features,
             )
 
     def get_channels(
