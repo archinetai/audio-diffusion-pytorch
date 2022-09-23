@@ -303,6 +303,7 @@ class Patcher(ConditionedSequential):
             PatchBlock(
                 in_channels=channels_pre[i],
                 out_channels=channels_post[i],
+                patch_size=factor,
                 context_mapping_features=context_mapping_features,
             )
             for i in range(blocks)
@@ -328,6 +329,7 @@ class Unpatcher(ConditionedSequential):
             UnpatchBlock(
                 in_channels=channels_pre[i],
                 out_channels=channels_post[i],
+                patch_size=factor,
                 context_mapping_features=context_mapping_features,
             )
             for i in range(blocks)
