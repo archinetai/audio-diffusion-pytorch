@@ -108,7 +108,7 @@ class DiffusionAutoencoder1d(Model1d):
         self,
         in_channels: int,
         channels: int,
-        patch_size: int,
+        patch_blocks: int,
         kernel_sizes_init: Sequence[int],
         multipliers: Sequence[int],
         factors: Sequence[int],
@@ -129,7 +129,7 @@ class DiffusionAutoencoder1d(Model1d):
         multiencoder = MultiEncoder1d(
             in_channels=in_channels,
             channels=channels,
-            patch_size=patch_size,
+            patch_blocks=patch_blocks,
             num_layers=encoder_depth,
             latent_channels=encoder_channels,
             multipliers=multipliers,
@@ -143,7 +143,7 @@ class DiffusionAutoencoder1d(Model1d):
         super().__init__(
             in_channels=in_channels,
             channels=channels,
-            patch_size=patch_size,
+            patch_blocks=patch_blocks,
             kernel_sizes_init=kernel_sizes_init,
             multipliers=multipliers,
             factors=factors,
@@ -199,7 +199,8 @@ Audio Diffusion Classes (specific for 1d audio data)
 def get_default_model_kwargs():
     return dict(
         channels=128,
-        patch_size=16,
+        patch_blocks=4,
+        patch_factor=2,
         kernel_sizes_init=[1, 3, 7],
         multipliers=[1, 2, 4, 4, 4, 4, 4],
         factors=[4, 4, 4, 2, 2, 2],

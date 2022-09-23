@@ -3,14 +3,28 @@ from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from einops import rearrange, reduce, repeat
-from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many
 from einops_exts.torch import EinopsToAndFrom
 from torch import Tensor, einsum
 
 from .utils import default, exists, prod
+
+"""
+Utils
+"""
+
+
+class ConditionedSequential(nn.Module):
+    def __init__(self, *modules):
+        super().__init__()
+        self.module_list = nn.ModuleList(*modules)
+
+    def forward(self, x: Tensor, mapping: Optional[Tensor] = None):
+        for module in self.module_list:
+            x = module(x, mapping)
+        return x
+
 
 """
 Convolutional Blocks
@@ -140,7 +154,8 @@ class ResnetBlock1d(nn.Module):
         stride: int = 1,
         padding: int = 1,
         dilation: int = 1,
-        num_groups: int,
+        use_norm: bool = True,
+        num_groups: int = 8,
         context_mapping_features: Optional[int] = None,
         context_embedding_features: Optional[int] = None,
         context_heads: Optional[int] = None,
@@ -158,6 +173,7 @@ class ResnetBlock1d(nn.Module):
             stride=stride,
             padding=padding,
             dilation=dilation,
+            use_norm=use_norm,
             num_groups=num_groups,
         )
 
@@ -181,7 +197,10 @@ class ResnetBlock1d(nn.Module):
             )
 
         self.block2 = ConvBlock1d(
-            in_channels=out_channels, out_channels=out_channels, num_groups=num_groups
+            in_channels=out_channels,
+            out_channels=out_channels,
+            use_norm=use_norm,
+            num_groups=num_groups,
         )
 
         self.to_out = (
@@ -215,73 +234,104 @@ class ResnetBlock1d(nn.Module):
         return h + self.to_out(x)
 
 
-class ConvOut1d(nn.Module):
+class PatchBlock(nn.Module):
     def __init__(
         self,
         in_channels: int,
+        out_channels: int,
+        patch_size: int = 2,
         context_mapping_features: Optional[int] = None,
     ):
         super().__init__()
-        mid_channels = in_channels * 8
+        assert_message = f"out_channels must be divisible by patch_size ({patch_size})"
+        assert out_channels % patch_size == 0, assert_message
+        self.patch_size = patch_size
 
-        self.layers = nn.ModuleList(
-            ResnetBlock1d(
-                in_channels=in_channels if i == 0 else mid_channels,
-                out_channels=mid_channels,
-                kernel_size=3,
-                padding=3 ** (i + 1),
-                dilation=3 ** (i + 1),
-                num_groups=1,
-                context_mapping_features=context_mapping_features,
-            )
-            for i in range(3)
-        )
-
-        self.to_out = nn.Conv1d(
-            in_channels=mid_channels, out_channels=in_channels, kernel_size=1
+        self.block = ResnetBlock1d(
+            in_channels=in_channels,
+            out_channels=out_channels // patch_size,
+            num_groups=min(patch_size, in_channels),
+            context_mapping_features=context_mapping_features,
         )
 
     def forward(self, x: Tensor, mapping: Optional[Tensor] = None) -> Tensor:
-        for layer in self.layers:
-            x = F.elu(layer(x, mapping))
-        x = self.to_out(x)
+        x = self.block(x, mapping)
+        x = rearrange(x, "b c (l p) -> b (c p) l", p=self.patch_size)
         return x
 
 
-class CrossEmbed1d(nn.Module):
+class UnpatchBlock(nn.Module):
     def __init__(
         self,
         in_channels: int,
-        *,
-        kernel_sizes: Sequence[int],
-        stride: int,
-        out_channels: Optional[int] = None,
+        out_channels: int,
+        patch_size: int = 2,
+        context_mapping_features: Optional[int] = None,
     ):
         super().__init__()
-        assert all([*map(lambda t: (t % 2) == (stride % 2), kernel_sizes)])
-        out_channels = default(out_channels, in_channels)
+        assert_message = f"in_channels must be divisible by patch_size ({patch_size})"
+        assert in_channels % patch_size == 0, assert_message
+        self.patch_size = patch_size
 
-        kernel_sizes = sorted(kernel_sizes)
-        num_scales = len(kernel_sizes)
+        self.block = ResnetBlock1d(
+            in_channels=in_channels // patch_size,
+            out_channels=out_channels,
+            num_groups=min(patch_size, out_channels),
+            context_mapping_features=context_mapping_features,
+        )
 
-        channels_list = [int(out_channels / (2 ** i)) for i in range(1, num_scales)]
-        channels_list = [*channels_list, out_channels - sum(channels_list)]
+    def forward(self, x: Tensor, mapping: Optional[Tensor] = None) -> Tensor:
+        x = rearrange(x, " b (c p) l -> b c (l p) ", p=self.patch_size)
+        x = self.block(x, mapping)
+        return x
 
-        self.convs = nn.ModuleList([])
-        for kernel_size, channels in zip(kernel_sizes, channels_list):
-            self.convs += [
-                Conv1d(
-                    in_channels=in_channels,
-                    out_channels=channels,
-                    kernel_size=kernel_size,
-                    stride=stride,
-                    padding=(kernel_size - stride) // 2,
-                )
-            ]
 
-    def forward(self, x):
-        out_list = tuple(map(lambda conv: conv(x), self.convs))
-        return torch.cat(out_list, dim=1)
+class Patcher(ConditionedSequential):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        blocks: int,
+        factor: int,
+        context_mapping_features: Optional[int] = None,
+    ):
+        channels_pre = [in_channels * (factor ** i) for i in range(blocks)]
+        channels_post = [in_channels * (factor ** (i + 1)) for i in range(blocks - 1)]
+        channels_post += [out_channels]
+
+        super().__init__(
+            PatchBlock(
+                in_channels=channels_pre[i],
+                out_channels=channels_post[i],
+                context_mapping_features=context_mapping_features,
+            )
+            for i in range(blocks)
+        )
+
+
+class Unpatcher(ConditionedSequential):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        blocks: int,
+        factor: int,
+        context_mapping_features: Optional[int] = None,
+    ):
+        channels_pre = [in_channels]
+        channels_pre += [
+            out_channels * (factor ** (i + 1)) for i in reversed(range(blocks - 1))
+        ]
+        channels_post = [out_channels * (factor ** i) for i in reversed(range(blocks))]
+
+        super().__init__(
+            UnpatchBlock(
+                in_channels=channels_pre[i],
+                out_channels=channels_post[i],
+                context_mapping_features=context_mapping_features,
+            )
+            for i in range(blocks)
+        )
 
 
 """
@@ -822,7 +872,7 @@ class UNet1d(nn.Module):
         self,
         in_channels: int,
         channels: int,
-        patch_size: int,
+        patch_blocks: int,
         multipliers: Sequence[int],
         factors: Sequence[int],
         num_blocks: Sequence[int],
@@ -838,14 +888,12 @@ class UNet1d(nn.Module):
         use_attention_bottleneck: bool,
         use_context_time: bool,
         out_channels: Optional[int] = None,
+        patch_factor: int = 2,
         context_features: Optional[int] = None,
         context_channels: Optional[Sequence[int]] = None,
         context_embedding_features: Optional[int] = None,
-        use_post_out_block: bool = False,
-        use_sequential_patching: bool = False,
     ):
         super().__init__()
-
         out_channels = default(out_channels, in_channels)
         context_channels = list(default(context_channels, []))
         num_layers = len(multipliers) - 1
@@ -857,7 +905,6 @@ class UNet1d(nn.Module):
         self.use_context_time = use_context_time
         self.use_context_features = use_context_features
         self.use_context_channels = use_context_channels
-        self.use_post_out_block = use_post_out_block
 
         context_channels_pad_length = num_layers + 1 - len(context_channels)
         context_channels = context_channels + [0] * context_channels_pad_length
@@ -872,18 +919,6 @@ class UNet1d(nn.Module):
             len(factors) == num_layers
             and len(attentions) == num_layers
             and len(num_blocks) == num_layers
-        )
-
-        patching = "b c (p l)" if use_sequential_patching else "b c (l p)"
-
-        self.to_in = nn.Sequential(
-            Rearrange(f"{patching} -> b (c p) l", p=patch_size),
-            CrossEmbed1d(
-                in_channels=(in_channels + context_channels[0]) * patch_size,
-                out_channels=channels,
-                kernel_sizes=kernel_sizes_init,
-                stride=1,
-            ),
         )
 
         if use_context_time or use_context_features:
@@ -913,6 +948,14 @@ class UNet1d(nn.Module):
                 ),
                 nn.GELU(),
             )
+
+        self.to_in = Patcher(
+            in_channels=in_channels + context_channels[0],
+            out_channels=channels,
+            blocks=patch_blocks,
+            factor=patch_factor,
+            context_mapping_features=context_mapping_features,
+        )
 
         self.downsamples = nn.ModuleList(
             [
@@ -971,27 +1014,13 @@ class UNet1d(nn.Module):
             ]
         )
 
-        self.to_pre_out = ResnetBlock1d(
+        self.to_out = Unpatcher(
             in_channels=channels,
-            out_channels=channels,
-            num_groups=resnet_groups,
+            out_channels=out_channels,
+            blocks=patch_blocks,
+            factor=patch_factor,
             context_mapping_features=context_mapping_features,
         )
-
-        self.to_out = nn.Sequential(
-            Conv1d(
-                in_channels=channels,
-                out_channels=out_channels * patch_size,
-                kernel_size=1,
-            ),
-            Rearrange(f"b (c p) l -> {patching}", p=patch_size),
-        )
-
-        if self.use_post_out_block:
-            self.to_post_out = ConvOut1d(
-                in_channels=out_channels,
-                context_mapping_features=context_mapping_features,
-            )
 
     def get_channels(
         self, channels_list: Optional[Sequence[Tensor]] = None, layer: int = 0
@@ -1047,9 +1076,11 @@ class UNet1d(nn.Module):
         channels = self.get_channels(channels_list, layer=0)
         x = torch.cat([x, channels], dim=1) if exists(channels) else x
 
-        x, mapping = self.to_in(x), self.get_mapping(time, features)
-        skips_list = []
+        mapping = self.get_mapping(time, features)
 
+        x = self.to_in(x, mapping)
+
+        skips_list = []
         for i, downsample in enumerate(self.downsamples):
             channels = self.get_channels(channels_list, layer=i + 1)
             x, skips = downsample(
@@ -1063,9 +1094,8 @@ class UNet1d(nn.Module):
             skips = skips_list.pop()
             x = upsample(x, skips, mapping=mapping, embedding=embedding)
 
-        x = self.to_pre_out(x, mapping)
-        x = self.to_out(x)
-        x = self.to_post_out(x, mapping) if self.use_post_out_block else x
+        x = self.to_out(x, mapping)
+
         return x
 
 
@@ -1152,7 +1182,7 @@ class MultiEncoder1d(nn.Module):
         self,
         in_channels: int,
         channels: int,
-        patch_size: int,
+        patch_blocks: int,
         resnet_groups: int,
         kernel_multiplier_downsample: int,
         kernel_sizes_init: Sequence[int],
@@ -1161,9 +1191,10 @@ class MultiEncoder1d(nn.Module):
         multipliers: Sequence[int],
         factors: Sequence[int],
         num_blocks: Sequence[int],
+        patch_factor: int = 2,
     ):
         super().__init__()
-        self.factor = patch_size * prod(factors[0:num_layers])
+        self.factor = (patch_factor ** patch_blocks) * prod(factors[0:num_layers])
         self.channels_list = self.get_channels_list(
             in_channels, channels, multipliers, num_layers
         )
@@ -1174,14 +1205,11 @@ class MultiEncoder1d(nn.Module):
             and len(num_blocks) >= num_layers
         )
 
-        self.to_in = nn.Sequential(
-            Rearrange("b c (l p) -> b (c p) l", p=patch_size),
-            CrossEmbed1d(
-                in_channels=in_channels * patch_size,
-                out_channels=channels,
-                kernel_sizes=kernel_sizes_init,
-                stride=1,
-            ),
+        self.to_in = Patcher(
+            in_channels=in_channels,
+            out_channels=channels,
+            blocks=patch_blocks,
+            factor=patch_factor,
         )
 
         self.downsamples = nn.ModuleList(
@@ -1228,16 +1256,11 @@ class MultiEncoder1d(nn.Module):
             ]
         )
 
-        self.to_out = nn.Sequential(
-            ResnetBlock1d(
-                in_channels=channels, out_channels=channels, num_groups=resnet_groups
-            ),
-            Conv1d(
-                in_channels=channels,
-                out_channels=in_channels * patch_size,
-                kernel_size=1,
-            ),
-            Rearrange("b (c p) l -> b c (l p)", p=patch_size),
+        self.to_out = Unpatcher(
+            in_channels=channels,
+            out_channels=in_channels,
+            blocks=patch_blocks,
+            factor=patch_factor,
         )
 
     def get_channels_list(
