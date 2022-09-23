@@ -1079,8 +1079,8 @@ class UNet1d(nn.Module):
         mapping = self.get_mapping(time, features)
 
         x = self.to_in(x, mapping)
+        skips_list = [x]
 
-        skips_list = []
         for i, downsample in enumerate(self.downsamples):
             channels = self.get_channels(channels_list, layer=i + 1)
             x, skips = downsample(
@@ -1094,6 +1094,7 @@ class UNet1d(nn.Module):
             skips = skips_list.pop()
             x = upsample(x, skips, mapping=mapping, embedding=embedding)
 
+        x += skips_list.pop()
         x = self.to_out(x, mapping)
 
         return x
