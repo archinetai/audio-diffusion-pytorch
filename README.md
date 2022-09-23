@@ -126,6 +126,7 @@ unet = UNet1d(
     in_channels=1,
     channels=128,
     patch_blocks=4,
+    patch_factor=2,
     kernel_sizes_init=[1, 3, 7],
     multipliers=[1, 2, 4, 4, 4, 4, 4],
     factors=[4, 4, 4, 2, 2, 2],
