@@ -421,7 +421,7 @@ class TransformerBlock(nn.Module):
     def forward(self, x: Tensor, *, context: Optional[Tensor] = None) -> Tensor:
         x = self.attention(x) + x
         if self.use_cross_attention:
-            x = self.cross_attention(x, context=context)
+            x = self.cross_attention(x, context=context) + x
         x = self.feed_forward(x) + x
         return x
 
