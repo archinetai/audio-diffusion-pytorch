@@ -4,8 +4,8 @@ from typing import Any, List, Optional, Sequence, Tuple, Union
 import torch
 import torch.nn as nn
 from einops import rearrange, reduce, repeat
+from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many
-from einops_exts.torch import EinopsToAndFrom
 from torch import Tensor, einsum
 
 from .utils import default, exists, prod
@@ -157,14 +157,10 @@ class ResnetBlock1d(nn.Module):
         use_norm: bool = True,
         num_groups: int = 8,
         context_mapping_features: Optional[int] = None,
-        context_embedding_features: Optional[int] = None,
-        context_heads: Optional[int] = None,
-        context_head_features: Optional[int] = None,
     ) -> None:
         super().__init__()
 
         self.use_mapping = exists(context_mapping_features)
-        self.use_embedding = exists(context_embedding_features)
 
         self.block1 = ConvBlock1d(
             in_channels=in_channels,
@@ -183,19 +179,6 @@ class ResnetBlock1d(nn.Module):
                 features=context_mapping_features, channels=out_channels
             )
 
-        if self.use_embedding:
-            assert exists(context_heads) and exists(context_head_features)
-            self.cross_attend = EinopsToAndFrom(
-                "b c l",
-                "b l c",
-                CrossAttention(
-                    features=out_channels,
-                    context_features=context_embedding_features,
-                    head_features=context_head_features,
-                    num_heads=context_heads,
-                ),
-            )
-
         self.block2 = ConvBlock1d(
             in_channels=out_channels,
             out_channels=out_channels,
@@ -209,21 +192,11 @@ class ResnetBlock1d(nn.Module):
             else nn.Identity()
         )
 
-    def forward(
-        self,
-        x: Tensor,
-        mapping: Optional[Tensor] = None,
-        embedding: Optional[Tensor] = None,
-    ) -> Tensor:
-        assert_message = "context embedding required if context_embedding_features > 0"
-        assert not (self.use_embedding ^ exists(embedding)), assert_message
+    def forward(self, x: Tensor, mapping: Optional[Tensor] = None) -> Tensor:
         assert_message = "context mapping required if context_mapping_features > 0"
         assert not (self.use_mapping ^ exists(mapping)), assert_message
 
         h = self.block1(x)
-
-        if self.use_embedding:
-            h = self.cross_attend(h, context=embedding) + h
 
         scale_shift = None
         if self.use_mapping:
@@ -337,68 +310,17 @@ class Unpatcher(ConditionedSequential):
 
 
 """
-Norms
-"""
-
-
-class LayerNorm(nn.Module):
-    def __init__(self, features: int, *, bias: bool = True, eps: float = 1e-5):
-        super().__init__()
-        self.bias = bias
-        self.eps = eps
-        self.g = nn.Parameter(torch.ones(features))
-        self.b = nn.Parameter(torch.zeros(features)) if bias else None
-
-    def forward(self, x: Tensor) -> Tensor:
-        var = torch.var(x, dim=-1, unbiased=False, keepdim=True)
-        mean = torch.mean(x, dim=-1, keepdim=True)
-        norm = (x - mean) * (var + self.eps).rsqrt() * self.g
-        return norm + self.b if self.bias else norm
-
-
-class LayerNorm1d(nn.Module):
-    def __init__(self, channels: int, *, bias: bool = True, eps: float = 1e-5):
-        super().__init__()
-        self.bias = bias
-        self.eps = eps
-        self.g = nn.Parameter(torch.ones(1, channels, 1))
-        self.b = nn.Parameter(torch.zeros(1, channels, 1)) if bias else None
-
-    def forward(self, x: Tensor) -> Tensor:
-        var = torch.var(x, dim=1, unbiased=False, keepdim=True)
-        mean = torch.mean(x, dim=1, keepdim=True)
-        norm = (x - mean) * (var + self.eps).rsqrt() * self.g
-        return norm + self.b if self.bias else norm
-
-
-"""
 Attention Components
 """
 
 
-def FeedForward1d(channels: int, multiplier: int = 2):
-    mid_channels = int(channels * multiplier)
+def FeedForward(features: int, multiplier: int) -> nn.Module:
+    mid_features = features * multiplier
     return nn.Sequential(
-        LayerNorm1d(channels=channels, bias=False),
-        Conv1d(
-            in_channels=channels, out_channels=mid_channels, kernel_size=1, bias=False
-        ),
+        nn.Linear(in_features=features, out_features=mid_features),
         nn.GELU(),
-        LayerNorm1d(channels=mid_channels, bias=False),
-        Conv1d(
-            in_channels=mid_channels, out_channels=channels, kernel_size=1, bias=False
-        ),
+        nn.Linear(in_features=mid_features, out_features=features),
     )
-
-
-def attention_mask(
-    sim: Tensor,
-    mask: Tensor,
-) -> Tensor:
-    mask = rearrange(mask, "b j -> b 1 1 j")
-    max_neg_value = -torch.finfo(sim.dtype).max
-    sim = sim.masked_fill(~mask, max_neg_value)
-    return sim
 
 
 class AttentionBase(nn.Module):
@@ -406,52 +328,27 @@ class AttentionBase(nn.Module):
         self,
         features: int,
         *,
-        head_features: int = 64,
-        num_heads: int = 8,
-        out_features: Optional[int] = None,
+        head_features: int,
+        num_heads: int,
     ):
         super().__init__()
         self.scale = head_features ** -0.5
         self.num_heads = num_heads
         mid_features = head_features * num_heads
-        out_features = out_features if exists(out_features) else features
 
-        self.to_out = nn.Sequential(
-            nn.Linear(in_features=mid_features, out_features=out_features, bias=False),
-            LayerNorm(features=out_features, bias=False),
-        )
+        self.to_out = nn.Linear(in_features=mid_features, out_features=features)
 
-    def forward(
-        self,
-        q: Tensor,
-        k: Tensor,
-        v: Tensor,
-        *,
-        mask: Optional[Tensor] = None,
-        attention_bias: Optional[Tensor] = None,
-    ) -> Tensor:
-
-        # Split heads, scale queries
+    def forward(self, q: Tensor, k: Tensor, v: Tensor) -> Tensor:
+        # Split heads
         q, k, v = rearrange_many((q, k, v), "b n (h d) -> b h n d", h=self.num_heads)
-        q = q * self.scale
-
-        # Compute similarity matrix with bias and mask
-        sim = einsum("... n d, ... m d -> ... n m", q, k)
-        sim = sim + attention_bias if exists(attention_bias) else sim
-        sim = attention_mask(sim, mask) if exists(mask) else sim
-
+        # Compute similarity matrix
+        sim = einsum("... n d, ... m d -> ... n m", q, k) * self.scale
         # Get attention matrix with softmax
-        attn = sim.softmax(dim=-1, dtype=torch.float32)
-
+        attn = sim.softmax(dim=-1)
         # Compute values
-        out = einsum("... n j, ... j d -> ... n d", attn, v)
+        out = einsum("... n m, ... m d -> ... n d", attn, v)
         out = rearrange(out, "b h n d -> b n (h d)")
         return self.to_out(out)
-
-
-"""
-Attention Blocks
-"""
 
 
 class Attention(nn.Module):
@@ -459,50 +356,17 @@ class Attention(nn.Module):
         self,
         features: int,
         *,
-        head_features: int = 64,
-        num_heads: int = 8,
-        out_features: Optional[int] = None,
+        head_features: int,
+        num_heads: int,
+        context_features: Optional[int] = None,
     ):
         super().__init__()
-        mid_features = head_features * num_heads
-
-        self.norm = LayerNorm(features, bias=False)
-        self.to_q = nn.Linear(
-            in_features=features, out_features=mid_features, bias=False
-        )
-        self.to_kv = nn.Linear(
-            in_features=features, out_features=mid_features * 2, bias=False
-        )
-        self.attention = AttentionBase(
-            features,
-            num_heads=num_heads,
-            head_features=head_features,
-            out_features=out_features,
-        )
-
-    def forward(self, x: Tensor, *, mask: Optional[Tensor] = None) -> Tensor:
-        x = self.norm(x)
-        q, k, v = (self.to_q(x), *torch.chunk(self.to_kv(x), chunks=2, dim=-1))
-        x = self.attention(q, k, v, mask=mask)
-        return x
-
-
-class CrossAttention(nn.Module):
-    def __init__(
-        self,
-        features: int,
-        *,
-        context_features: int = None,
-        head_features: int = 64,
-        num_heads: int = 8,
-    ):
-        super().__init__()
+        self.context_features = context_features
         mid_features = head_features * num_heads
         context_features = default(context_features, features)
 
-        self.norm_in = LayerNorm(features=features, bias=False)
-        self.norm_context = LayerNorm(features=context_features, bias=False)
-
+        self.norm = nn.LayerNorm(features)
+        self.norm_context = nn.LayerNorm(context_features)
         self.to_q = nn.Linear(
             in_features=features, out_features=mid_features, bias=False
         )
@@ -513,14 +377,16 @@ class CrossAttention(nn.Module):
             features, num_heads=num_heads, head_features=head_features
         )
 
-    def forward(self, x: Tensor, context: Tensor, mask: Tensor = None) -> Tensor:
-        b, n, d = x.shape
-        x = self.norm_in(x)
-        context = self.norm_context(context)
-        # Queries form x, k and v from context
+    def forward(self, x: Tensor, *, context: Optional[Tensor] = None) -> Tensor:
+        assert_message = "You must provide a context when using context_features"
+        assert not self.context_features or exists(context), assert_message
+        # Use context if provided
+        context = default(context, x)
+        # Normalize then compute q from input and k,v from context
+        x, context = self.norm(x), self.norm_context(context)
         q, k, v = (self.to_q(x), *torch.chunk(self.to_kv(context), chunks=2, dim=-1))
-        x = self.attention(q, k, v, mask=mask)
-        return x
+        # Compute and return attention
+        return self.attention(q, k, v)
 
 
 """
@@ -528,28 +394,92 @@ Transformer Blocks
 """
 
 
-class TransformerBlock1d(nn.Module):
+class TransformerBlock(nn.Module):
     def __init__(
         self,
-        channels: int,
-        *,
-        num_heads: int = 8,
-        head_features: int = 32,
-        multiplier: int = 2,
+        features: int,
+        num_heads: int,
+        head_features: int,
+        multiplier: int,
+        context_features: Optional[int] = None,
     ):
         super().__init__()
-        self.attention = EinopsToAndFrom(
-            "b c l",
-            "b l c",
-            Attention(
-                features=channels, num_heads=num_heads, head_features=head_features
+
+        self.use_cross_attention = exists(context_features) and context_features > 0
+
+        self.attention = Attention(
+            features=features, num_heads=num_heads, head_features=head_features
+        )
+
+        if self.use_cross_attention:
+            self.cross_attention = Attention(
+                features=features, num_heads=num_heads, head_features=head_features
+            )
+
+        self.feed_forward = FeedForward(features=features, multiplier=multiplier)
+
+    def forward(self, x: Tensor, *, context: Optional[Tensor] = None) -> Tensor:
+        x = self.attention(x) + x
+        if self.use_cross_attention:
+            x = self.cross_attention(x, context=context)
+        x = self.feed_forward(x) + x
+        return x
+
+
+"""
+Transformers
+"""
+
+
+class Transformer1d(nn.Module):
+    def __init__(
+        self,
+        num_layers: int,
+        channels: int,
+        num_heads: int,
+        head_features: int,
+        multiplier: int,
+        context_features: Optional[int] = None,
+    ):
+        super().__init__()
+
+        self.to_in = nn.Sequential(
+            nn.GroupNorm(num_groups=32, num_channels=channels, eps=1e-6, affine=True),
+            Conv1d(
+                in_channels=channels,
+                out_channels=channels,
+                kernel_size=1,
+            ),
+            Rearrange("b c t -> b t c"),
+        )
+
+        self.blocks = nn.ModuleList(
+            [
+                TransformerBlock(
+                    features=channels,
+                    head_features=head_features,
+                    num_heads=num_heads,
+                    multiplier=multiplier,
+                    context_features=context_features,
+                )
+                for i in range(num_layers)
+            ]
+        )
+
+        self.to_out = nn.Sequential(
+            Rearrange("b t c -> b c t"),
+            Conv1d(
+                in_channels=channels,
+                out_channels=channels,
+                kernel_size=1,
             ),
         )
-        self.feed_forward = FeedForward1d(channels=channels, multiplier=multiplier)
 
-    def forward(self, x: Tensor) -> Tensor:
-        x = self.attention(x) + x
-        x = self.feed_forward(x) + x
+    def forward(self, x: Tensor, *, context: Optional[Tensor] = None) -> Tensor:
+        x = self.to_in(x)
+        for block in self.blocks:
+            x = block(x, context=context)
+        x = self.to_out(x)
         return x
 
 
@@ -601,7 +531,7 @@ class DownsampleBlock1d(nn.Module):
         use_skip: bool = False,
         extract_channels: int = 0,
         context_channels: int = 0,
-        use_attention: bool = False,
+        num_transformer_blocks: int = 0,
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
         attention_multiplier: Optional[int] = None,
@@ -611,7 +541,7 @@ class DownsampleBlock1d(nn.Module):
         super().__init__()
         self.use_pre_downsample = use_pre_downsample
         self.use_skip = use_skip
-        self.use_attention = use_attention
+        self.use_transformer = num_transformer_blocks > 0
         self.use_extract = extract_channels > 0
         self.use_context = context_channels > 0
 
@@ -631,21 +561,19 @@ class DownsampleBlock1d(nn.Module):
                     out_channels=channels,
                     num_groups=num_groups,
                     context_mapping_features=context_mapping_features,
-                    context_embedding_features=context_embedding_features,
-                    context_heads=attention_heads,
-                    context_head_features=attention_features,
                 )
                 for i in range(num_layers)
             ]
         )
 
-        if use_attention:
+        if self.use_transformer:
             assert (
                 exists(attention_heads)
                 and exists(attention_features)
                 and exists(attention_multiplier)
             )
-            self.transformer = TransformerBlock1d(
+            self.transformer = Transformer1d(
+                num_layers=num_transformer_blocks,
                 channels=channels,
                 num_heads=attention_heads,
                 head_features=attention_features,
@@ -663,6 +591,7 @@ class DownsampleBlock1d(nn.Module):
     def forward(
         self,
         x: Tensor,
+        *,
         mapping: Optional[Tensor] = None,
         channels: Optional[Tensor] = None,
         embedding: Optional[Tensor] = None,
@@ -676,11 +605,11 @@ class DownsampleBlock1d(nn.Module):
 
         skips = []
         for block in self.blocks:
-            x = block(x, mapping=mapping, embedding=embedding)
+            x = block(x, mapping=mapping)
             skips += [x] if self.use_skip else []
 
-        if self.use_attention:
-            x = self.transformer(x)
+        if self.use_transformer:
+            x = self.transformer(x, context=embedding)
             skips += [x] if self.use_skip else []
 
         if not self.use_pre_downsample:
@@ -708,7 +637,7 @@ class UpsampleBlock1d(nn.Module):
         skip_channels: int = 0,
         use_skip_scale: bool = False,
         extract_channels: int = 0,
-        use_attention: bool = False,
+        num_transformer_blocks: int = 0,
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
         attention_multiplier: Optional[int] = None,
@@ -719,7 +648,7 @@ class UpsampleBlock1d(nn.Module):
 
         self.use_extract = extract_channels > 0
         self.use_pre_upsample = use_pre_upsample
-        self.use_attention = use_attention
+        self.use_transformer = num_transformer_blocks > 0
         self.use_skip = use_skip
         self.skip_scale = 2 ** -0.5 if use_skip_scale else 1.0
 
@@ -732,21 +661,19 @@ class UpsampleBlock1d(nn.Module):
                     out_channels=channels,
                     num_groups=num_groups,
                     context_mapping_features=context_mapping_features,
-                    context_embedding_features=context_embedding_features,
-                    context_heads=attention_heads,
-                    context_head_features=attention_features,
                 )
                 for _ in range(num_layers)
             ]
         )
 
-        if use_attention:
+        if self.use_transformer:
             assert (
                 exists(attention_heads)
                 and exists(attention_features)
                 and exists(attention_multiplier)
             )
-            self.transformer = TransformerBlock1d(
+            self.transformer = Transformer1d(
+                num_layers=num_transformer_blocks,
                 channels=channels,
                 num_heads=attention_heads,
                 head_features=attention_features,
@@ -774,6 +701,7 @@ class UpsampleBlock1d(nn.Module):
     def forward(
         self,
         x: Tensor,
+        *,
         skips: Optional[List[Tensor]] = None,
         mapping: Optional[Tensor] = None,
         embedding: Optional[Tensor] = None,
@@ -784,10 +712,10 @@ class UpsampleBlock1d(nn.Module):
 
         for block in self.blocks:
             x = self.add_skip(x, skip=skips.pop()) if exists(skips) else x
-            x = block(x, mapping=mapping, embedding=embedding)
+            x = block(x, mapping=mapping)
 
-        if self.use_attention:
-            x = self.transformer(x)
+        if self.use_transformer:
+            x = self.transformer(x, context=embedding)
 
         if not self.use_pre_upsample:
             x = self.upsample(x)
@@ -805,40 +733,35 @@ class BottleneckBlock1d(nn.Module):
         channels: int,
         *,
         num_groups: int,
-        use_attention: bool = False,
+        num_transformer_blocks: int = 0,
         attention_heads: Optional[int] = None,
         attention_features: Optional[int] = None,
+        attention_multiplier: Optional[int] = None,
         context_mapping_features: Optional[int] = None,
         context_embedding_features: Optional[int] = None,
     ):
         super().__init__()
-
-        assert (not use_attention) or (
-            exists(attention_heads) and exists(attention_features)
-        )
-
-        self.use_attention = use_attention
+        self.use_transformer = num_transformer_blocks > 0
 
         self.pre_block = ResnetBlock1d(
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
             context_mapping_features=context_mapping_features,
-            context_embedding_features=context_embedding_features,
-            context_heads=attention_heads,
-            context_head_features=attention_features,
         )
 
-        if use_attention:
-            assert exists(attention_heads) and exists(attention_features)
-            self.attention = EinopsToAndFrom(
-                "b c l",
-                "b l c",
-                Attention(
-                    features=channels,
-                    num_heads=attention_heads,
-                    head_features=attention_features,
-                ),
+        if self.use_transformer:
+            assert (
+                exists(attention_heads)
+                and exists(attention_features)
+                and exists(attention_multiplier)
+            )
+            self.transformer = Transformer1d(
+                num_layers=num_transformer_blocks,
+                channels=channels,
+                num_heads=attention_heads,
+                head_features=attention_features,
+                multiplier=attention_multiplier,
             )
 
         self.post_block = ResnetBlock1d(
@@ -846,21 +769,19 @@ class BottleneckBlock1d(nn.Module):
             out_channels=channels,
             num_groups=num_groups,
             context_mapping_features=context_mapping_features,
-            context_embedding_features=context_embedding_features,
-            context_heads=attention_heads,
-            context_head_features=attention_features,
         )
 
     def forward(
         self,
         x: Tensor,
+        *,
         mapping: Optional[Tensor] = None,
         embedding: Optional[Tensor] = None,
     ) -> Tensor:
-        x = self.pre_block(x, mapping=mapping, embedding=embedding)
-        if self.use_attention:
-            x = self.attention(x)
-        x = self.post_block(x, mapping=mapping, embedding=embedding)
+        x = self.pre_block(x, mapping=mapping)
+        if self.use_transformer:
+            x = self.transformer(x, context=embedding)
+        x = self.post_block(x, mapping=mapping)
         return x
 
 
@@ -879,7 +800,7 @@ class UNet1d(nn.Module):
         multipliers: Sequence[int],
         factors: Sequence[int],
         num_blocks: Sequence[int],
-        attentions: Sequence[bool],
+        attentions: Sequence[int],
         attention_heads: int,
         attention_features: int,
         attention_multiplier: int,
@@ -888,7 +809,6 @@ class UNet1d(nn.Module):
         kernel_sizes_init: Sequence[int],
         use_nearest_upsample: bool,
         use_skip_scale: bool,
-        use_attention_bottleneck: bool,
         use_context_time: bool,
         out_channels: Optional[int] = None,
         context_features: Optional[int] = None,
@@ -919,7 +839,7 @@ class UNet1d(nn.Module):
 
         assert (
             len(factors) == num_layers
-            and len(attentions) == num_layers
+            and len(attentions) >= num_layers
             and len(num_blocks) == num_layers
         )
 
@@ -973,7 +893,7 @@ class UNet1d(nn.Module):
                     num_groups=resnet_groups,
                     use_pre_downsample=True,
                     use_skip=True,
-                    use_attention=attentions[i],
+                    num_transformer_blocks=attentions[i],
                     attention_heads=attention_heads,
                     attention_features=attention_features,
                     attention_multiplier=attention_multiplier,
@@ -987,9 +907,10 @@ class UNet1d(nn.Module):
             context_mapping_features=context_mapping_features,
             context_embedding_features=context_embedding_features,
             num_groups=resnet_groups,
-            use_attention=use_attention_bottleneck,
+            num_transformer_blocks=attentions[-1],
             attention_heads=attention_heads,
             attention_features=attention_features,
+            attention_multiplier=attention_multiplier,
         )
 
         self.upsamples = nn.ModuleList(
@@ -1007,7 +928,7 @@ class UNet1d(nn.Module):
                     use_pre_upsample=False,
                     use_skip=True,
                     skip_channels=channels * multipliers[i + 1],
-                    use_attention=attentions[i],
+                    num_transformer_blocks=attentions[i],
                     attention_heads=attention_heads,
                     attention_features=attention_features,
                     attention_multiplier=attention_multiplier,
@@ -1094,7 +1015,7 @@ class UNet1d(nn.Module):
 
         for i, upsample in enumerate(self.upsamples):
             skips = skips_list.pop()
-            x = upsample(x, skips, mapping=mapping, embedding=embedding)
+            x = upsample(x, skips=skips, mapping=mapping, embedding=embedding)
 
         x += skips_list.pop()
         x = self.to_out(x, mapping)
