@@ -14,7 +14,7 @@ from .diffusion import (
     Sampler,
     Schedule,
 )
-from .modules import MultiEncoder1d, UNet1d, UNetConditional1d
+from .modules import Bottleneck, MultiEncoder1d, UNet1d, UNetConditional1d
 from .utils import default, exists, to_list
 
 """
@@ -94,13 +94,6 @@ class DiffusionUpsampler1d(Model1d):
         noise = torch.randn_like(channels)
         default_kwargs = dict(channels_list=[channels])
         return super().sample(noise, **{**default_kwargs, **kwargs})  # type: ignore
-
-
-class Bottleneck(nn.Module):
-    """Bottleneck interface (subclass can be provided to DiffusionAutoencoder1d)"""
-
-    def forward(self, x: Tensor) -> Tuple[Tensor, Any]:
-        raise NotImplementedError()
 
 
 class DiffusionAutoencoder1d(Model1d):

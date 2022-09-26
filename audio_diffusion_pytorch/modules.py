@@ -1100,6 +1100,93 @@ Encoders / Decoders
 """
 
 
+class Bottleneck(nn.Module):
+    """Bottleneck interface (subclass can be provided to (Diffusion)Autoencoder1d)"""
+
+    def forward(self, x: Tensor) -> Tuple[Tensor, Any]:
+        raise NotImplementedError()
+
+
+class AutoEncoder1d(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        channels: int,
+        patch_blocks: int,
+        patch_factor: int,
+        resnet_groups: int,
+        multipliers: Sequence[int],
+        factors: Sequence[int],
+        num_blocks: Sequence[int],
+        bottleneck: Optional[Bottleneck] = None,
+    ):
+        super().__init__()
+        num_layers = len(multipliers) - 1
+        self.bottleneck = bottleneck
+
+        assert len(factors) >= num_layers and len(num_blocks) >= num_layers
+
+        self.to_in = Patcher(
+            in_channels=in_channels,
+            out_channels=channels,
+            blocks=patch_blocks,
+            factor=patch_factor,
+        )
+
+        self.downsamples = nn.ModuleList(
+            [
+                DownsampleBlock1d(
+                    in_channels=channels * multipliers[i],
+                    out_channels=channels * multipliers[i + 1],
+                    factor=factors[i],
+                    kernel_multiplier=2,
+                    num_groups=resnet_groups,
+                    num_layers=num_blocks[i],
+                )
+                for i in range(num_layers)
+            ]
+        )
+
+        self.upsamples = nn.ModuleList(
+            [
+                UpsampleBlock1d(
+                    in_channels=channels * multipliers[i + 1],
+                    out_channels=channels * multipliers[i],
+                    factor=factors[i],
+                    num_groups=resnet_groups,
+                    num_layers=num_blocks[i],
+                    use_nearest=False,
+                    use_skip=False,
+                )
+                for i in reversed(range(num_layers))
+            ]
+        )
+
+        self.to_out = Unpatcher(
+            in_channels=channels,
+            out_channels=in_channels,
+            blocks=patch_blocks,
+            factor=patch_factor,
+        )
+
+    def encode(
+        self, x: Tensor, with_info: bool = False
+    ) -> Union[Tensor, Tuple[Tensor, Any]]:
+        x = self.to_in(x)
+        for downsample in self.downsamples:
+            x = downsample(x)
+
+        if exists(self.bottleneck):
+            x, info = self.bottleneck(x)
+            return (x, info) if with_info else x
+        return x
+
+    def decode(self, x: Tensor) -> Tensor:
+        for upsample in self.upsamples:
+            x = upsample(x)
+        return self.to_out(x)
+
+
 class MultiEncoder1d(nn.Module):
     def __init__(
         self,
