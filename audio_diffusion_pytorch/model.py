@@ -172,7 +172,6 @@ class DiffusionAutoencoder1d(Model1d):
             latent = self.encode(x)
 
         channels_list = self.multiencoder.decode(latent)
-        print([x.shape for x in channels_list])
         loss = self.diffusion(x, channels_list=channels_list, **kwargs)
         return (loss, info) if with_info else loss
 
