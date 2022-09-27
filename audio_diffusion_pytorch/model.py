@@ -78,6 +78,7 @@ class DiffusionUpsampler1d(Model1d):
         batch_size, factors = x.shape[0], self.factors
         # Pick random factor for each batch element
         factor_batch_idx = torch.randint(0, len(factors), (batch_size,))
+        x = x.clone()
 
         for i, factor in enumerate(factors):
             # Pick random items with current factor, skip if 0
