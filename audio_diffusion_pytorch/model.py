@@ -112,6 +112,7 @@ class DiffusionAutoencoder1d(Model1d):
         encoder_channels: int,
         bottleneck: Optional[Bottleneck] = None,
         encoder_num_blocks: Optional[Sequence[int]] = None,
+        encoder_out_layers: int = 0,
         **kwargs
     ):
         self.in_channels = in_channels
@@ -125,6 +126,7 @@ class DiffusionAutoencoder1d(Model1d):
             patch_blocks=patch_blocks,
             patch_factor=patch_factor,
             num_layers=encoder_depth,
+            num_layers_out=encoder_out_layers,
             latent_channels=encoder_channels,
             multipliers=multipliers,
             factors=factors,
@@ -159,6 +161,7 @@ class DiffusionAutoencoder1d(Model1d):
             latent = self.encode(x)
 
         channels_list = self.multiencoder.decode(latent)
+        print([x.shape for x in channels_list])
         loss = self.diffusion(x, channels_list=channels_list, **kwargs)
         return (loss, info) if with_info else loss
 

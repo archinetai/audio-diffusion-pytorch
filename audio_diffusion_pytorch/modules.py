@@ -1192,22 +1192,27 @@ class MultiEncoder1d(nn.Module):
         self,
         in_channels: int,
         channels: int,
+        patch_factor: int,
         patch_blocks: int,
         resnet_groups: int,
         kernel_multiplier_downsample: int,
         num_layers: int,
+        num_layers_out: int,
         latent_channels: int,
         multipliers: Sequence[int],
         factors: Sequence[int],
         num_blocks: Sequence[int],
-        patch_factor: int = 2,
     ):
         super().__init__()
+        # Latent space factor
         self.factor = (patch_factor ** patch_blocks) * prod(factors[0:num_layers])
+        self.num_layers = num_layers
+        self.num_layers_out = num_layers_out
         self.channels_list = self.get_channels_list(
-            in_channels, channels, multipliers, num_layers
+            in_channels, channels, multipliers, num_layers, num_layers_out
         )
 
+        assert num_layers_out <= num_layers
         assert (
             len(multipliers) >= num_layers + 1
             and len(factors) >= num_layers
@@ -1261,7 +1266,7 @@ class MultiEncoder1d(nn.Module):
                     use_skip=False,
                     extract_channels=channels * multipliers[i],
                 )
-                for i in reversed(range(num_layers))
+                for i in reversed(range(num_layers - num_layers_out, num_layers))
             ]
         )
 
@@ -1278,9 +1283,12 @@ class MultiEncoder1d(nn.Module):
         channels: int,
         multipliers: Sequence[int],
         num_layers: int,
+        num_layers_out: int,
     ) -> List[int]:
         channels_list = [in_channels]
         channels_list += [channels * m for m in multipliers[1 : num_layers + 1]]
+        empty_channels = num_layers - num_layers_out
+        channels_list = [0] * empty_channels + channels_list[-num_layers_out - 1 :]
         return channels_list
 
     def encode(self, x: Tensor) -> Tensor:
@@ -1297,6 +1305,7 @@ class MultiEncoder1d(nn.Module):
         for upsample in self.upsamples:
             channels_list += [channels]
             x, channels = upsample(x)
-        x = self.to_out(x)
+        if self.num_layers_out == self.num_layers:
+            x = self.to_out(x)
         channels_list += [x]
         return channels_list[::-1]
