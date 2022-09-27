@@ -1,4 +1,3 @@
-import random
 from typing import Any, Optional, Sequence, Tuple, Union
 
 import torch
@@ -15,7 +14,7 @@ from .diffusion import (
     Schedule,
 )
 from .modules import Bottleneck, MultiEncoder1d, UNet1d, UNetConditional1d
-from .utils import default, exists, to_list
+from .utils import default, downsample, exists, to_list, upsample
 
 """
 Diffusion Classes (generic for 1d data)
@@ -68,29 +67,41 @@ class DiffusionUpsampler1d(Model1d):
     def __init__(
         self, factor: Union[int, Sequence[int]], in_channels: int, *args, **kwargs
     ):
-        self.factor = to_list(factor)
+        self.factors = to_list(factor)
         default_kwargs = dict(
             in_channels=in_channels,
             context_channels=[in_channels],
         )
         super().__init__(*args, **{**default_kwargs, **kwargs})  # type: ignore
 
-    def forward(self, x: Tensor, factor: Optional[int] = None, **kwargs) -> Tensor:
-        # Either user provides factor or we pick one at random
-        factor = default(factor, random.choice(self.factor))
-        # Downsample by picking every `factor` item
-        downsampled = x[:, :, ::factor]
-        # Upsample by interleaving to get context
-        channels = torch.repeat_interleave(downsampled, repeats=factor, dim=2)
+    def random_reupsample(self, x: Tensor) -> Tensor:
+        batch_size, factors = x.shape[0], self.factors
+        # Pick random factor for each batch element
+        factor_batch_idx = torch.randint(0, len(factors), (batch_size,))
+
+        for i, factor in enumerate(factors):
+            # Pick random items with current factor, skip if 0
+            n = torch.count_nonzero(factor_batch_idx == i)
+            if n > 0:
+                waveforms = x[factor_batch_idx == i]
+                # Downsample and reupsample items
+                downsampled = downsample(waveforms, factor=factor)
+                reupsampled = upsample(downsampled, factor=factor)
+                # Save reupsampled version in place
+                x[factor_batch_idx == i] = reupsampled
+        return x
+
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
+        channels = self.random_reupsample(x)
         return self.diffusion(x, channels_list=[channels], **kwargs)
 
     def sample(  # type: ignore
         self, undersampled: Tensor, factor: Optional[int] = None, *args, **kwargs
     ):
         # Either user provides factor or we pick the first
-        factor = default(factor, self.factor[0])
-        # Upsample channels by interleaving
-        channels = torch.repeat_interleave(undersampled, repeats=factor, dim=2)
+        factor = default(factor, self.factors[0])
+        # Upsample channels
+        channels = upsample(undersampled, factor=factor)
         noise = torch.randn_like(channels)
         default_kwargs = dict(channels_list=[channels])
         return super().sample(noise, **{**default_kwargs, **kwargs})  # type: ignore
