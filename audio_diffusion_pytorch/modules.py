@@ -1118,11 +1118,13 @@ class AutoEncoder1d(nn.Module):
         multipliers: Sequence[int],
         factors: Sequence[int],
         num_blocks: Sequence[int],
+        use_noisy: bool = False,
         bottleneck: Optional[Bottleneck] = None,
     ):
         super().__init__()
         num_layers = len(multipliers) - 1
         self.bottleneck = bottleneck
+        self.use_noisy = use_noisy
 
         assert len(factors) >= num_layers and len(num_blocks) >= num_layers
 
@@ -1150,7 +1152,7 @@ class AutoEncoder1d(nn.Module):
         self.upsamples = nn.ModuleList(
             [
                 UpsampleBlock1d(
-                    in_channels=channels * multipliers[i + 1],
+                    in_channels=channels * multipliers[i + 1] * (use_noisy + 1),
                     out_channels=channels * multipliers[i],
                     factor=factors[i],
                     num_groups=resnet_groups,
@@ -1183,6 +1185,8 @@ class AutoEncoder1d(nn.Module):
 
     def decode(self, x: Tensor) -> Tensor:
         for upsample in self.upsamples:
+            if self.use_noisy:
+                x = torch.cat([x, torch.randn_like(x)], dim=1)
             x = upsample(x)
         return self.to_out(x)
 
