@@ -1165,7 +1165,7 @@ class AutoEncoder1d(nn.Module):
         )
 
         self.to_out = Unpatcher(
-            in_channels=channels,
+            in_channels=channels * (use_noisy + 1),
             out_channels=in_channels,
             blocks=patch_blocks,
             factor=patch_factor,
@@ -1188,6 +1188,8 @@ class AutoEncoder1d(nn.Module):
             if self.use_noisy:
                 x = torch.cat([x, torch.randn_like(x)], dim=1)
             x = upsample(x)
+        if self.use_noisy:
+            x = torch.cat([x, torch.randn_like(x)], dim=1)
         return self.to_out(x)
 
 
