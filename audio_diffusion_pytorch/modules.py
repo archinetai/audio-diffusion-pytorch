@@ -8,7 +8,7 @@ from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many
 from torch import Tensor, einsum
 
-from .utils import default, exists, prod
+from .utils import default, exists, prod, wave_norm, wave_unnorm
 
 """
 Utils
@@ -809,6 +809,7 @@ class UNet1d(nn.Module):
         use_nearest_upsample: bool,
         use_skip_scale: bool,
         use_context_time: bool,
+        norm: float = 0.0,
         out_channels: Optional[int] = None,
         context_features: Optional[int] = None,
         context_channels: Optional[Sequence[int]] = None,
@@ -822,6 +823,8 @@ class UNet1d(nn.Module):
         use_context_channels = len(context_channels) > 0
         context_mapping_features = None
 
+        self.norm = norm
+        self.use_norm = norm > 0.0
         self.num_layers = num_layers
         self.use_context_time = use_context_time
         self.use_context_features = use_context_features
@@ -997,8 +1000,10 @@ class UNet1d(nn.Module):
         # Concat context channels at layer 0 if provided
         channels = self.get_channels(channels_list, layer=0)
         x = torch.cat([x, channels], dim=1) if exists(channels) else x
-
         mapping = self.get_mapping(time, features)
+
+        if self.use_norm:
+            x = wave_norm(x, peak=self.norm)
 
         x = self.to_in(x, mapping)
         skips_list = [x]
@@ -1018,6 +1023,9 @@ class UNet1d(nn.Module):
 
         x += skips_list.pop()
         x = self.to_out(x, mapping)
+
+        if self.use_norm:
+            x = wave_unnorm(x, peak=self.norm)
 
         return x
 
@@ -1120,11 +1128,14 @@ class AutoEncoder1d(nn.Module):
         num_blocks: Sequence[int],
         use_noisy: bool = False,
         bottleneck: Optional[Bottleneck] = None,
+        norm: float = 0.0,
     ):
         super().__init__()
         num_layers = len(multipliers) - 1
         self.bottleneck = bottleneck
         self.use_noisy = use_noisy
+        self.use_norm = norm > 0.0
+        self.norm = norm
 
         assert len(factors) >= num_layers and len(num_blocks) >= num_layers
 
@@ -1174,6 +1185,9 @@ class AutoEncoder1d(nn.Module):
     def encode(
         self, x: Tensor, with_info: bool = False
     ) -> Union[Tensor, Tuple[Tensor, Any]]:
+        if self.use_norm:
+            x = wave_norm(x, peak=self.norm)
+
         x = self.to_in(x)
         for downsample in self.downsamples:
             x = downsample(x)
@@ -1190,7 +1204,12 @@ class AutoEncoder1d(nn.Module):
             x = upsample(x)
         if self.use_noisy:
             x = torch.cat([x, torch.randn_like(x)], dim=1)
-        return self.to_out(x)
+        x = self.to_out(x)
+
+        if self.use_norm:
+            x = wave_unnorm(x, peak=self.norm)
+
+        return x
 
 
 class MultiEncoder1d(nn.Module):
