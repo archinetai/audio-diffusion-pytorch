@@ -220,6 +220,7 @@ def get_default_model_kwargs():
         use_nearest_upsample=False,
         use_skip_scale=True,
         use_context_time=True,
+        use_magnitude_channels=False,
         diffusion_sigma_distribution=LogNormalDistribution(mean=-3.0, std=1.0),
         diffusion_sigma_data=0.1,
         diffusion_dynamic_threshold=0.0,

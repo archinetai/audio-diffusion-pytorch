@@ -83,18 +83,3 @@ def downsample(waveforms: Tensor, factor: int, **kwargs) -> Tensor:
 
 def upsample(waveforms: Tensor, factor: int, **kwargs) -> Tensor:
     return resample(waveforms, factor_in=1, factor_out=factor, **kwargs)
-
-
-def wave_norm(x: Tensor, peak: float = 0.5, alpha: float = 20.0) -> Tensor:
-    x = x.clip(-1, 1)
-    x = 2 * torch.sigmoid(alpha * x) - 1
-    x = x.clip(-1, 1)
-    return x * peak
-
-
-def wave_unnorm(x: Tensor, peak: float = 0.5, alpha: float = 20.0) -> Tensor:
-    x = x / peak
-    x = x.clip(-1, 1)
-    x = (1.0 / alpha) * torch.log((x + 1) / (1 - x))
-    x = x.clip(-1, 1)
-    return x

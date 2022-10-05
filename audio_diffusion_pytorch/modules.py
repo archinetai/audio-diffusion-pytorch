@@ -8,7 +8,7 @@ from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many
 from torch import Tensor, einsum
 
-from .utils import default, exists, prod, wave_norm, wave_unnorm
+from .utils import default, exists, prod
 
 """
 Utils
@@ -785,6 +785,15 @@ class BottleneckBlock1d(nn.Module):
         return x
 
 
+def get_norm_scale(x: Tensor, quantile: float):
+    return torch.quantile(x.abs(), quantile, dim=-1, keepdim=True) + 1e-7
+
+
+def merge_magnitude_channels(x: Tensor):
+    waveform, magnitude = torch.chunk(x, chunks=2, dim=1)
+    return torch.sigmoid(waveform) * torch.tanh(magnitude)
+
+
 """
 UNet
 """
@@ -809,8 +818,8 @@ class UNet1d(nn.Module):
         use_nearest_upsample: bool,
         use_skip_scale: bool,
         use_context_time: bool,
-        norm: float = 0.0,
-        norm_alpha: float = 20.0,
+        use_magnitude_channels: bool,
+        norm_quantile: float = 0.0,
         out_channels: Optional[int] = None,
         context_features: Optional[int] = None,
         context_channels: Optional[Sequence[int]] = None,
@@ -824,9 +833,6 @@ class UNet1d(nn.Module):
         use_context_channels = len(context_channels) > 0
         context_mapping_features = None
 
-        self.use_norm = norm > 0.0
-        self.norm = norm
-        self.norm_alpha = norm_alpha
         self.num_layers = num_layers
         self.use_context_time = use_context_time
         self.use_context_features = use_context_features
@@ -840,6 +846,10 @@ class UNet1d(nn.Module):
             has_context = [c > 0 for c in context_channels]
             self.has_context = has_context
             self.channels_ids = [sum(has_context[:i]) for i in range(len(has_context))]
+
+        self.use_norm = norm_quantile > 0.0
+        self.norm_quantile = norm_quantile
+        self.use_magnitude_channels = use_magnitude_channels
 
         assert (
             len(factors) == num_layers
@@ -943,7 +953,7 @@ class UNet1d(nn.Module):
 
         self.to_out = Unpatcher(
             in_channels=channels,
-            out_channels=out_channels,
+            out_channels=out_channels * (2 if use_magnitude_channels else 1),
             blocks=patch_blocks,
             factor=patch_factor,
             context_mapping_features=context_mapping_features,
@@ -1002,10 +1012,11 @@ class UNet1d(nn.Module):
         # Concat context channels at layer 0 if provided
         channels = self.get_channels(channels_list, layer=0)
         x = torch.cat([x, channels], dim=1) if exists(channels) else x
+        # Compute mapping from time and features
         mapping = self.get_mapping(time, features)
-
-        if self.use_norm:
-            x = wave_norm(x, peak=self.norm, alpha=self.norm_alpha)
+        # Compute norm scale
+        scale = get_norm_scale(x, self.norm_quantile) if self.use_norm else 1.0
+        x = x / scale
 
         x = self.to_in(x, mapping)
         skips_list = [x]
@@ -1026,10 +1037,10 @@ class UNet1d(nn.Module):
         x += skips_list.pop()
         x = self.to_out(x, mapping)
 
-        if self.use_norm:
-            x = wave_unnorm(x, peak=self.norm, alpha=self.norm_alpha)
+        if self.use_magnitude_channels:
+            x = merge_magnitude_channels(x)
 
-        return x
+        return x * scale
 
 
 class FixedEmbedding(nn.Module):
@@ -1130,16 +1141,13 @@ class AutoEncoder1d(nn.Module):
         num_blocks: Sequence[int],
         use_noisy: bool = False,
         bottleneck: Optional[Bottleneck] = None,
-        norm: float = 0.0,
-        norm_alpha: float = 20.0,
+        use_magnitude_channels: bool = False,
     ):
         super().__init__()
         num_layers = len(multipliers) - 1
         self.bottleneck = bottleneck
         self.use_noisy = use_noisy
-        self.use_norm = norm > 0.0
-        self.norm = norm
-        self.norm_alpha = norm_alpha
+        self.use_magnitude_channels = use_magnitude_channels
 
         assert len(factors) >= num_layers and len(num_blocks) >= num_layers
 
@@ -1181,7 +1189,7 @@ class AutoEncoder1d(nn.Module):
 
         self.to_out = Unpatcher(
             in_channels=channels * (use_noisy + 1),
-            out_channels=in_channels,
+            out_channels=in_channels * (2 if use_magnitude_channels else 1),
             blocks=patch_blocks,
             factor=patch_factor,
         )
@@ -1189,8 +1197,6 @@ class AutoEncoder1d(nn.Module):
     def encode(
         self, x: Tensor, with_info: bool = False
     ) -> Union[Tensor, Tuple[Tensor, Any]]:
-        if self.use_norm:
-            x = wave_norm(x, peak=self.norm, alpha=self.norm_alpha)
 
         x = self.to_in(x)
         for downsample in self.downsamples:
@@ -1206,12 +1212,14 @@ class AutoEncoder1d(nn.Module):
             if self.use_noisy:
                 x = torch.cat([x, torch.randn_like(x)], dim=1)
             x = upsample(x)
+
         if self.use_noisy:
             x = torch.cat([x, torch.randn_like(x)], dim=1)
+
         x = self.to_out(x)
 
-        if self.use_norm:
-            x = wave_unnorm(x, peak=self.norm, alpha=self.norm_alpha)
+        if self.use_magnitude_channels:
+            x = merge_magnitude_channels(x)
 
         return x
 
