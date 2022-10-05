@@ -87,12 +87,13 @@ def upsample(waveforms: Tensor, factor: int, **kwargs) -> Tensor:
 
 def wave_norm(x: Tensor, bits: int = 24, peak: float = 0.5) -> Tensor:
     mu = 2 ** bits
+    x = x.clip(-1, 1)
     x = torch.sign(x) * torch.log1p(mu * torch.abs(x)) / math.log1p(mu)
     return x * peak
 
 
 def wave_unnorm(x: Tensor, bits: int = 24, peak: float = 0.5) -> Tensor:
-    x = x / peak
+    x = (x / peak).clip(-1, 1)
     mu = 2 ** bits
     x = torch.sign(x) * (torch.exp(torch.abs(x) * math.log1p(mu)) - 1) / mu
     return x
