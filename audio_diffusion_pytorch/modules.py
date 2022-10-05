@@ -810,6 +810,7 @@ class UNet1d(nn.Module):
         use_skip_scale: bool,
         use_context_time: bool,
         norm: float = 0.0,
+        norm_alpha: float = 20.0,
         out_channels: Optional[int] = None,
         context_features: Optional[int] = None,
         context_channels: Optional[Sequence[int]] = None,
@@ -823,8 +824,9 @@ class UNet1d(nn.Module):
         use_context_channels = len(context_channels) > 0
         context_mapping_features = None
 
-        self.norm = norm
         self.use_norm = norm > 0.0
+        self.norm = norm
+        self.norm_alpha = norm_alpha
         self.num_layers = num_layers
         self.use_context_time = use_context_time
         self.use_context_features = use_context_features
@@ -1003,7 +1005,7 @@ class UNet1d(nn.Module):
         mapping = self.get_mapping(time, features)
 
         if self.use_norm:
-            x = wave_norm(x, peak=self.norm)
+            x = wave_norm(x, peak=self.norm, alpha=self.norm_alpha)
 
         x = self.to_in(x, mapping)
         skips_list = [x]
@@ -1025,7 +1027,7 @@ class UNet1d(nn.Module):
         x = self.to_out(x, mapping)
 
         if self.use_norm:
-            x = wave_unnorm(x, peak=self.norm)
+            x = wave_unnorm(x, peak=self.norm, alpha=self.norm_alpha)
 
         return x
 
@@ -1129,6 +1131,7 @@ class AutoEncoder1d(nn.Module):
         use_noisy: bool = False,
         bottleneck: Optional[Bottleneck] = None,
         norm: float = 0.0,
+        norm_alpha: float = 20.0,
     ):
         super().__init__()
         num_layers = len(multipliers) - 1
@@ -1136,6 +1139,7 @@ class AutoEncoder1d(nn.Module):
         self.use_noisy = use_noisy
         self.use_norm = norm > 0.0
         self.norm = norm
+        self.norm_alpha = norm_alpha
 
         assert len(factors) >= num_layers and len(num_blocks) >= num_layers
 
@@ -1186,7 +1190,7 @@ class AutoEncoder1d(nn.Module):
         self, x: Tensor, with_info: bool = False
     ) -> Union[Tensor, Tuple[Tensor, Any]]:
         if self.use_norm:
-            x = wave_norm(x, peak=self.norm)
+            x = wave_norm(x, peak=self.norm, alpha=self.norm_alpha)
 
         x = self.to_in(x)
         for downsample in self.downsamples:
@@ -1207,7 +1211,7 @@ class AutoEncoder1d(nn.Module):
         x = self.to_out(x)
 
         if self.use_norm:
-            x = wave_unnorm(x, peak=self.norm)
+            x = wave_unnorm(x, peak=self.norm, alpha=self.norm_alpha)
 
         return x
 
