@@ -1,3 +1,4 @@
+import math
 from math import pi
 from typing import Any, List, Optional, Sequence, Tuple, Union
 
@@ -486,6 +487,19 @@ class Transformer1d(nn.Module):
 """
 Time Embeddings
 """
+
+
+class SinusoidalEmbedding(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, x: Tensor) -> Tensor:
+        device, half_dim = x.device, self.dim // 2
+        emb = torch.tensor(math.log(10000) / (half_dim - 1), device=device)
+        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
+        emb = rearrange(x, "i -> i 1") * rearrange(emb, "j -> 1 j")
+        return torch.cat((emb.sin(), emb.cos()), dim=-1)
 
 
 class LearnedPositionalEmbedding(nn.Module):

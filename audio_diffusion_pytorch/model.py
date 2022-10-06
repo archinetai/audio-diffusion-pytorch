@@ -13,7 +13,13 @@ from .diffusion import (
     Sampler,
     Schedule,
 )
-from .modules import Bottleneck, MultiEncoder1d, UNet1d, UNetConditional1d
+from .modules import (
+    Bottleneck,
+    MultiEncoder1d,
+    SinusoidalEmbedding,
+    UNet1d,
+    UNetConditional1d,
+)
 from .utils import default, downsample, exists, to_list, upsample
 
 """
@@ -65,46 +71,64 @@ class Model1d(nn.Module):
 
 class DiffusionUpsampler1d(Model1d):
     def __init__(
-        self, factor: Union[int, Sequence[int]], in_channels: int, *args, **kwargs
+        self,
+        in_channels: int,
+        factor: Union[int, Sequence[int]],
+        factor_features: Optional[int] = None,
+        *args,
+        **kwargs
     ):
         self.factors = to_list(factor)
+        self.use_conditioning = exists(factor_features)
+
         default_kwargs = dict(
             in_channels=in_channels,
             context_channels=[in_channels],
+            context_features=factor_features if self.use_conditioning else None,
         )
         super().__init__(*args, **{**default_kwargs, **kwargs})  # type: ignore
 
-    def random_reupsample(self, x: Tensor) -> Tensor:
+        if self.use_conditioning:
+            assert exists(factor_features)
+            self.to_features = SinusoidalEmbedding(dim=factor_features)
+
+    def random_reupsample(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         batch_size, factors = x.shape[0], self.factors
         # Pick random factor for each batch element
-        factor_batch_idx = torch.randint(0, len(factors), (batch_size,))
+        random_factors = torch.randint(0, len(factors), (batch_size,))
         x = x.clone()
 
         for i, factor in enumerate(factors):
             # Pick random items with current factor, skip if 0
-            n = torch.count_nonzero(factor_batch_idx == i)
+            n = torch.count_nonzero(random_factors == i)
             if n > 0:
-                waveforms = x[factor_batch_idx == i]
+                waveforms = x[random_factors == i]
                 # Downsample and reupsample items
                 downsampled = downsample(waveforms, factor=factor)
                 reupsampled = upsample(downsampled, factor=factor)
                 # Save reupsampled version in place
-                x[factor_batch_idx == i] = reupsampled
-        return x
+                x[random_factors == i] = reupsampled
+        return x, random_factors
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
-        channels = self.random_reupsample(x)
-        return self.diffusion(x, channels_list=[channels], **kwargs)
+        channels, factors = self.random_reupsample(x)
+        features = self.to_features(factors) if self.use_conditioning else None
+        return self.diffusion(x, channels_list=[channels], features=features, **kwargs)
 
     def sample(  # type: ignore
         self, undersampled: Tensor, factor: Optional[int] = None, *args, **kwargs
     ):
         # Either user provides factor or we pick the first
+        batch_size, device = undersampled.shape[0], undersampled.device
         factor = default(factor, self.factors[0])
-        # Upsample channels
+        # Upsample channels by interpolation
         channels = upsample(undersampled, factor=factor)
+        # Compute features if conditioning on factor
+        factors = torch.tensor([factor] * batch_size, device=device)
+        features = self.to_features(factors) if self.use_conditioning else None
+        # Diffuse upsampled
         noise = torch.randn_like(channels)
-        default_kwargs = dict(channels_list=[channels])
+        default_kwargs = dict(channels_list=[channels], features=features)
         return super().sample(noise, **{**default_kwargs, **kwargs})  # type: ignore
 
 
