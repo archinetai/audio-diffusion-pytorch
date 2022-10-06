@@ -93,9 +93,9 @@ class DiffusionUpsampler1d(Model1d):
             self.to_features = SinusoidalEmbedding(dim=factor_features)
 
     def random_reupsample(self, x: Tensor) -> Tuple[Tensor, Tensor]:
-        batch_size, factors = x.shape[0], self.factors
+        batch_size, device, factors = x.shape[0], x.device, self.factors
         # Pick random factor for each batch element
-        random_factors = torch.randint(0, len(factors), (batch_size,))
+        random_factors = torch.randint(0, len(factors), (batch_size,), device=device)
         x = x.clone()
 
         for i, factor in enumerate(factors):
