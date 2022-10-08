@@ -1,4 +1,4 @@
-from math import sqrt
+from math import atan, pi, sqrt
 from typing import Any, Callable, Optional, Tuple
 
 import torch
@@ -8,6 +8,10 @@ from einops import rearrange, reduce
 from torch import Tensor
 
 from .utils import default, exists
+
+"""
+Diffusion Training
+"""
 
 """ Distributions """
 
@@ -23,17 +27,227 @@ class LogNormalDistribution(Distribution):
         self.std = std
 
     def __call__(
-        self, num_samples, device: torch.device = torch.device("cpu")
+        self, num_samples: int, device: torch.device = torch.device("cpu")
     ) -> Tensor:
         normal = self.mean + self.std * torch.randn((num_samples,), device=device)
         return normal.exp()
 
 
+class VDistribution(Distribution):
+    def __init__(
+        self,
+        min_value: float = 0.0,
+        max_value: float = float("inf"),
+        sigma_data: float = 1.0,
+    ):
+        self.min_value = min_value
+        self.max_value = max_value
+        self.sigma_data = sigma_data
+
+    def __call__(
+        self, num_samples: int, device: torch.device = torch.device("cpu")
+    ) -> Tensor:
+        sigma_data = self.sigma_data
+        min_cdf = atan(self.min_value / sigma_data) * 2 / pi
+        max_cdf = atan(self.max_value / sigma_data) * 2 / pi
+        u = (max_cdf - min_cdf) * torch.randn((num_samples,), device=device) + min_cdf
+        return torch.tan(u * pi / 2) * sigma_data
+
+
+""" Diffusion Classes """
+
+
+def pad_dims(x: Tensor, ndim: int) -> Tensor:
+    # Pads additional ndims to the right of the tensor
+    return x.view(*x.shape, *((1,) * ndim))
+
+
+def clip(x: Tensor, dynamic_threshold: float = 0.0):
+    if dynamic_threshold == 0.0:
+        return x.clamp(-1.0, 1.0)
+    else:
+        # Dynamic thresholding
+        # Find dynamic threshold quantile for each batch
+        x_flat = rearrange(x, "b ... -> b (...)")
+        scale = torch.quantile(x_flat.abs(), dynamic_threshold, dim=-1)
+        # Clamp to a min of 1.0
+        scale.clamp_(min=1.0)
+        # Clamp all values and scale
+        scale = pad_dims(scale, ndim=x.ndim - scale.ndim)
+        x = x.clamp(-scale, scale) / scale
+        return x
+
+
+def to_batch(
+    batch_size: int,
+    device: torch.device,
+    x: Optional[float] = None,
+    xs: Optional[Tensor] = None,
+) -> Tensor:
+    assert exists(x) ^ exists(xs), "Either x or xs must be provided"
+    # If x provided use the same for all batch items
+    if exists(x):
+        xs = torch.full(size=(batch_size,), fill_value=x).to(device)
+    assert exists(xs)
+    return xs
+
+
+class Diffusion(nn.Module):
+
+    """Base diffusion class"""
+
+    def denoise_fn(
+        self,
+        x_noisy: Tensor,
+        sigmas: Optional[Tensor] = None,
+        sigma: Optional[float] = None,
+        **kwargs,
+    ) -> Tensor:
+        raise NotImplementedError("Diffusion class missing denoise_fn")
+
+    def forward(self, x: Tensor, noise: Tensor = None, **kwargs) -> Tensor:
+        raise NotImplementedError("Diffusion class missing forward function")
+
+
+class VDiffusion(Diffusion):
+    def __init__(self, net: nn.Module, *, sigma_distribution: Distribution):
+        super().__init__()
+        self.net = net
+        self.sigma_distribution = sigma_distribution
+
+    def get_scale_weights(self, sigmas: Tensor) -> Tuple[Tensor, ...]:
+        sigma_data = 1.0
+        sigmas = rearrange(sigmas, "b -> b 1 1")
+        c_skip = (sigma_data ** 2) / (sigmas ** 2 + sigma_data ** 2)
+        c_out = -sigmas * sigma_data * (sigma_data ** 2 + sigmas ** 2) ** -0.5
+        c_in = (sigmas ** 2 + sigma_data ** 2) ** -0.5
+        return c_skip, c_out, c_in
+
+    def sigma_to_t(self, sigmas: Tensor) -> Tensor:
+        return sigmas.atan() / pi * 2
+
+    def t_to_sigma(self, t: Tensor) -> Tensor:
+        return (t * pi / 2).tan()
+
+    def denoise_fn(
+        self,
+        x_noisy: Tensor,
+        sigmas: Optional[Tensor] = None,
+        sigma: Optional[float] = None,
+        **kwargs,
+    ) -> Tensor:
+        batch_size, device = x_noisy.shape[0], x_noisy.device
+        sigmas = to_batch(x=sigma, xs=sigmas, batch_size=batch_size, device=device)
+
+        # Predict network output and add skip connection
+        c_skip, c_out, c_in = self.get_scale_weights(sigmas)
+        x_pred = self.net(c_in * x_noisy, self.sigma_to_t(sigmas), **kwargs)
+        x_denoised = c_skip * x_noisy + c_out * x_pred
+        return x_denoised
+
+    def forward(self, x: Tensor, noise: Tensor = None, **kwargs) -> Tensor:
+        batch_size, device = x.shape[0], x.device
+
+        # Sample amount of noise to add for each batch element
+        sigmas = self.sigma_distribution(num_samples=batch_size, device=device)
+        sigmas_padded = rearrange(sigmas, "b -> b 1 1")
+
+        # Add noise to input
+        noise = default(noise, lambda: torch.randn_like(x))
+        x_noisy = x + sigmas_padded * noise
+
+        # Compute model output
+        c_skip, c_out, c_in = self.get_scale_weights(sigmas)
+        x_pred = self.net(c_in * x_noisy, self.sigma_to_t(sigmas), **kwargs)
+
+        # Compute v-objective target
+        v_target = (x - c_skip * x_noisy) / c_out
+
+        # Compute loss
+        loss = F.mse_loss(x_pred, v_target)
+        return loss
+
+
+class KDiffusion(Diffusion):
+    """Elucidated Diffusion (Karras et al. 2022): https://arxiv.org/abs/2206.00364"""
+
+    def __init__(
+        self,
+        net: nn.Module,
+        *,
+        sigma_distribution: Distribution,
+        sigma_data: float,  # data distribution standard deviation
+        dynamic_threshold: float = 0.0,
+    ):
+        super().__init__()
+        self.net = net
+        self.sigma_data = sigma_data
+        self.sigma_distribution = sigma_distribution
+        self.dynamic_threshold = dynamic_threshold
+
+    def get_scale_weights(self, sigmas: Tensor) -> Tuple[Tensor, ...]:
+        sigma_data = self.sigma_data
+        c_noise = torch.log(sigmas) * 0.25
+        sigmas = rearrange(sigmas, "b -> b 1 1")
+        c_skip = (sigma_data ** 2) / (sigmas ** 2 + sigma_data ** 2)
+        c_out = sigmas * sigma_data * (sigma_data ** 2 + sigmas ** 2) ** -0.5
+        c_in = (sigmas ** 2 + sigma_data ** 2) ** -0.5
+        return c_skip, c_out, c_in, c_noise
+
+    def denoise_fn(
+        self,
+        x_noisy: Tensor,
+        sigmas: Optional[Tensor] = None,
+        sigma: Optional[float] = None,
+        **kwargs,
+    ) -> Tensor:
+        batch_size, device = x_noisy.shape[0], x_noisy.device
+        sigmas = to_batch(x=sigma, xs=sigmas, batch_size=batch_size, device=device)
+
+        # Predict network output and add skip connection
+        c_skip, c_out, c_in, c_noise = self.get_scale_weights(sigmas)
+        x_pred = self.net(c_in * x_noisy, c_noise, **kwargs)
+        x_denoised = c_skip * x_noisy + c_out * x_pred
+
+        # Clips in [-1,1] range, with dynamic thresholding if provided
+        return clip(x_denoised, dynamic_threshold=self.dynamic_threshold)
+
+    def loss_weight(self, sigmas: Tensor) -> Tensor:
+        # Computes weight depending on data distribution
+        return (sigmas ** 2 + self.sigma_data ** 2) * (sigmas * self.sigma_data) ** -2
+
+    def forward(self, x: Tensor, noise: Tensor = None, **kwargs) -> Tensor:
+        batch_size, device = x.shape[0], x.device
+
+        # Sample amount of noise to add for each batch element
+        sigmas = self.sigma_distribution(num_samples=batch_size, device=device)
+        sigmas_padded = rearrange(sigmas, "b -> b 1 1")
+
+        # Add noise to input
+        noise = default(noise, lambda: torch.randn_like(x))
+        x_noisy = x + sigmas_padded * noise
+
+        # Compute denoised values
+        x_denoised = self.denoise_fn(x_noisy, sigmas=sigmas, **kwargs)
+
+        # Compute weighted loss
+        losses = F.mse_loss(x_denoised, x, reduction="none")
+        losses = reduce(losses, "b ... -> b", "mean")
+        losses = losses * self.loss_weight(sigmas)
+        loss = losses.mean()
+
+        return loss
+
+
+"""
+Diffusion Sampling
+"""
+
 """ Schedules """
 
 
 class Schedule(nn.Module):
-    """Interface used by different schedules"""
+    """Interface used by different sampling schedules"""
 
     def forward(self, num_steps: int, device: torch.device) -> Tensor:
         raise NotImplementedError()
@@ -61,8 +275,6 @@ class KarrasSchedule(Schedule):
 
 
 """ Samplers """
-
-""" Many methods inspired by https://github.com/crowsonkb/k-diffusion/ """
 
 
 class Sampler(nn.Module):
@@ -229,104 +441,7 @@ class ADPM2Sampler(Sampler):
         return source * mask + x * ~mask
 
 
-""" Diffusion Classes """
-
-
-def pad_dims(x: Tensor, ndim: int) -> Tensor:
-    # Pads additional ndims to the right of the tensor
-    return x.view(*x.shape, *((1,) * ndim))
-
-
-class Diffusion(nn.Module):
-    """Elucidated Diffusion: https://arxiv.org/abs/2206.00364"""
-
-    def __init__(
-        self,
-        net: nn.Module,
-        *,
-        sigma_distribution: Distribution,
-        sigma_data: float,  # data distribution standard deviation
-        dynamic_threshold: float = 0.0,
-    ):
-        super().__init__()
-
-        self.net = net
-        self.sigma_data = sigma_data
-        self.sigma_distribution = sigma_distribution
-        self.dynamic_threshold = dynamic_threshold
-
-    def get_scale_weights(self, sigmas: Tensor) -> Tuple[Tensor, ...]:
-        sigma_data = self.sigma_data
-        sigmas_padded = rearrange(sigmas, "b -> b 1 1")
-        c_skip = (sigma_data ** 2) / (sigmas_padded ** 2 + sigma_data ** 2)
-        c_out = (
-            sigmas_padded * sigma_data * (sigma_data ** 2 + sigmas_padded ** 2) ** -0.5
-        )
-        c_in = (sigmas_padded ** 2 + sigma_data ** 2) ** -0.5
-        c_noise = torch.log(sigmas) * 0.25
-        return c_skip, c_out, c_in, c_noise
-
-    def denoise_fn(
-        self,
-        x_noisy: Tensor,
-        sigmas: Optional[Tensor] = None,
-        sigma: Optional[float] = None,
-        **kwargs,
-    ) -> Tensor:
-        batch, device = x_noisy.shape[0], x_noisy.device
-
-        assert exists(sigmas) ^ exists(sigma), "Either sigmas or sigma must be provided"
-
-        # If sigma provided use the same for all batch items (used for sampling)
-        if exists(sigma):
-            sigmas = torch.full(size=(batch,), fill_value=sigma).to(device)
-
-        assert exists(sigmas)
-
-        # Predict network output and add skip connection
-        c_skip, c_out, c_in, c_noise = self.get_scale_weights(sigmas)
-        x_pred = self.net(c_in * x_noisy, c_noise, **kwargs)
-        x_denoised = c_skip * x_noisy + c_out * x_pred
-
-        # Dynamic thresholding
-        if self.dynamic_threshold == 0.0:
-            return x_denoised.clamp(-1.0, 1.0)
-        else:
-            # Find dynamic threshold quantile for each batch
-            x_flat = rearrange(x_denoised, "b ... -> b (...)")
-            scale = torch.quantile(x_flat.abs(), self.dynamic_threshold, dim=-1)
-            # Clamp to a min of 1.0
-            scale.clamp_(min=1.0)
-            # Clamp all values and scale
-            scale = pad_dims(scale, ndim=x_denoised.ndim - scale.ndim)
-            x_denoised = x_denoised.clamp(-scale, scale) / scale
-            return x_denoised
-
-    def loss_weight(self, sigmas: Tensor) -> Tensor:
-        # Computes weight depending on data distribution
-        return (sigmas ** 2 + self.sigma_data ** 2) * (sigmas * self.sigma_data) ** -2
-
-    def forward(self, x: Tensor, noise: Tensor = None, **kwargs) -> Tensor:
-        batch, device = x.shape[0], x.device
-
-        # Sample amount of noise to add for each batch element
-        sigmas = self.sigma_distribution(num_samples=batch, device=device)
-        sigmas_padded = rearrange(sigmas, "b -> b 1 1")
-
-        # Add noise to input
-        noise = default(noise, lambda: torch.randn_like(x))
-        x_noisy = x + sigmas_padded * noise
-
-        # Compute denoised values
-        x_denoised = self.denoise_fn(x_noisy, sigmas=sigmas, **kwargs)
-
-        # Compute weighted loss
-        losses = F.mse_loss(x_denoised, x, reduction="none")
-        losses = reduce(losses, "b ... -> b", "mean")
-        losses = losses * self.loss_weight(sigmas)
-        loss = losses.mean()
-
-        return loss
+""" Main Classes """
 
 
 class DiffusionSampler(nn.Module):

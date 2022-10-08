@@ -7,10 +7,13 @@ from .diffusion import (
     Distribution,
     KarrasSampler,
     KarrasSchedule,
+    KDiffusion,
     LogNormalDistribution,
     Sampler,
     Schedule,
     SpanBySpanComposer,
+    VDiffusion,
+    VDistribution,
 )
 from .model import (
     AudioDiffusionAutoencoder,

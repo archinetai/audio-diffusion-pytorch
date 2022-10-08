@@ -4,14 +4,14 @@ import torch
 from torch import Tensor, nn
 
 from .diffusion import (
-    ADPM2Sampler,
-    Diffusion,
+    AEulerSampler,
     DiffusionSampler,
     Distribution,
     KarrasSchedule,
-    LogNormalDistribution,
     Sampler,
     Schedule,
+    VDiffusion,
+    VDistribution,
 )
 from .modules import (
     Bottleneck,
@@ -31,8 +31,6 @@ class Model1d(nn.Module):
     def __init__(
         self,
         diffusion_sigma_distribution: Distribution,
-        diffusion_sigma_data: int,
-        diffusion_dynamic_threshold: float,
         use_classifier_free_guidance: bool = False,
         **kwargs
     ):
@@ -42,11 +40,8 @@ class Model1d(nn.Module):
 
         self.unet = UNet(**kwargs)
 
-        self.diffusion = Diffusion(
-            net=self.unet,
-            sigma_distribution=diffusion_sigma_distribution,
-            sigma_data=diffusion_sigma_data,
-            dynamic_threshold=diffusion_dynamic_threshold,
+        self.diffusion = VDiffusion(
+            net=self.unet, sigma_distribution=diffusion_sigma_distribution
         )
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
@@ -245,16 +240,14 @@ def get_default_model_kwargs():
         use_skip_scale=True,
         use_context_time=True,
         use_magnitude_channels=False,
-        diffusion_sigma_distribution=LogNormalDistribution(mean=-3.0, std=1.0),
-        diffusion_sigma_data=0.1,
-        diffusion_dynamic_threshold=0.0,
+        diffusion_sigma_distribution=VDistribution(),
     )
 
 
 def get_default_sampling_kwargs():
     return dict(
         sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0),
-        sampler=ADPM2Sampler(rho=1.0),
+        sampler=AEulerSampler(),
     )
 
 
