@@ -1136,9 +1136,9 @@ class UNetConditional1d(UNet1d):
 class T5Embedder(nn.Module):
     def __init__(self, model: str = "t5-base", max_length: int = 64):
         super().__init__()
-        from transformers import T5EncoderModel, T5Tokenizer
+        from transformers import AutoTokenizer, T5EncoderModel
 
-        self.tokenizer = T5Tokenizer.from_pretrained(model)
+        self.tokenizer = AutoTokenizer.from_pretrained(model)
         self.transformer = T5EncoderModel.from_pretrained(model)
         self.max_length = max_length
 
