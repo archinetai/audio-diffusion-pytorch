@@ -27,6 +27,7 @@ from .model import (
 from .modules import (
     AutoEncoder1d,
     MultiEncoder1d,
+    T5Embedder,
     UNet1d,
     UNetConditional1d,
     Variational,

@@ -1082,6 +1082,9 @@ def rand_bool(shape: Any, proba: float, device: Any = None) -> Tensor:
         return torch.bernoulli(torch.full(shape, proba, device=device)).to(torch.bool)
 
 
+""" Conditioning """
+
+
 class UNetConditional1d(UNet1d):
     """
     UNet1d with classifier-free guidance on the token embeddings
@@ -1128,6 +1131,35 @@ class UNetConditional1d(UNet1d):
             out = out_masked + (out - out_masked) * embedding_scale
 
         return out
+
+
+class T5Embedder(nn.Module):
+    def __init__(self, model: str = "t5-base", max_length: int = 64):
+        super().__init__()
+        from transformers import T5EncoderModel, T5Tokenizer
+
+        self.tokenizer = T5Tokenizer.from_pretrained(model)
+        self.transformer = T5EncoderModel.from_pretrained(model)
+        self.max_length = max_length
+
+    @torch.no_grad()
+    def forward(self, texts: List[str]) -> Tensor:
+
+        encoded = self.tokenizer(
+            texts,
+            truncation=True,
+            max_length=self.max_length,
+            padding="max_length",
+            return_tensors="pt",
+        )
+
+        self.transformer.eval()
+
+        embedding = self.transformer(
+            input_ids=encoded["input_ids"], attention_mask=encoded["attention_mask"]
+        )["last_hidden_state"]
+
+        return embedding
 
 
 """

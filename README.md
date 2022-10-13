@@ -93,19 +93,19 @@ from audio_diffusion_pytorch import AudioDiffusionConditional
 
 model = AudioDiffusionConditional(
     in_channels=1,
-    embedding_max_length=512,
+    embedding_max_length=64,
     embedding_features=768,
     embedding_mask_proba=0.1 # Conditional dropout of batch elements
 )
 
 # Train on pairs of audio and embedding data (e.g. from a transformer output)
 x = torch.randn(2, 1, 2 ** 18)
-embedding = torch.randn(2, 512, 768)
+embedding = torch.randn(2, 64, 768)
 loss = model(x, embedding=embedding)
 loss.backward()
 
 # Given start embedding and noise sample new source
-embedding = torch.randn(1, 512, 768)
+embedding = torch.randn(1, 64, 768)
 noise = torch.randn(1, 1, 2 ** 18)
 sampled = model.sample(
     noise,
@@ -113,6 +113,25 @@ sampled = model.sample(
     embedding_scale=5.0, # Classifier-free guidance scale
     num_steps=5
 ) # [1, 1, 2 ** 18]
+```
+
+#### Text Conditional Generation
+You can generate embeddings from text by using a pretrained frozen T5 transformer with `T5Embedder`, as follows (note that this requires `pip install transformers`):
+
+```py
+from audio_diffusion_pytorch import T5Embedder
+
+embedder = T5Embedder(model='t5-base', max_length=64)
+embedding = embedder(["First batch item text...", "Second batch item text..."])
+
+loss = model(x, embedding=embedding)
+# ...
+sampled = model.sample(
+    noise,
+    embedding=embedding,
+    embedding_scale=5.0, # Classifier-free guidance scale
+    num_steps=5
+)
 ```
 
 ## Usage with Components
