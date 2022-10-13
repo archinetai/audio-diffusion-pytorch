@@ -1153,10 +1153,14 @@ class T5Embedder(nn.Module):
             return_tensors="pt",
         )
 
+        device = next(self.transformer.parameters()).device
+        input_ids = encoded["input_ids"].to(device)
+        attention_mask = encoded["attention_mask"].to(device)
+
         self.transformer.eval()
 
         embedding = self.transformer(
-            input_ids=encoded["input_ids"], attention_mask=encoded["attention_mask"]
+            input_ids=input_ids, attention_mask=attention_mask
         )["last_hidden_state"]
 
         return embedding
