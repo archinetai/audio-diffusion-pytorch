@@ -122,7 +122,7 @@ You can generate embeddings from text by using a pretrained frozen T5 transforme
 from audio_diffusion_pytorch import T5Embedder
 
 embedder = T5Embedder(model='t5-base', max_length=64)
-embedding = embedder(["First batch item text...", "Second batch item text..."])
+embedding = embedder(["First batch item text...", "Second batch item text..."]) # [1, 64, 768]
 
 loss = model(x, embedding=embedding)
 # ...
