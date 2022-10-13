@@ -105,14 +105,14 @@ loss = model(x, embedding=embedding)
 loss.backward()
 
 # Given start embedding and noise sample new source
-embedding = torch.randn(1, 64, 768)
-noise = torch.randn(1, 1, 2 ** 18)
+embedding = torch.randn(2, 64, 768)
+noise = torch.randn(2, 1, 2 ** 18)
 sampled = model.sample(
     noise,
     embedding=embedding,
     embedding_scale=5.0, # Classifier-free guidance scale
     num_steps=5
-) # [1, 1, 2 ** 18]
+) # [2, 1, 2 ** 18]
 ```
 
 #### Text Conditional Generation
@@ -122,7 +122,7 @@ You can generate embeddings from text by using a pretrained frozen T5 transforme
 from audio_diffusion_pytorch import T5Embedder
 
 embedder = T5Embedder(model='t5-base', max_length=64)
-embedding = embedder(["First batch item text...", "Second batch item text..."]) # [1, 64, 768]
+embedding = embedder(["First batch item text...", "Second batch item text..."]) # [2, 64, 768]
 
 loss = model(x, embedding=embedding)
 # ...
