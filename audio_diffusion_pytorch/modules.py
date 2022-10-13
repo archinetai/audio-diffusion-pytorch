@@ -1138,8 +1138,44 @@ Encoders / Decoders
 class Bottleneck(nn.Module):
     """Bottleneck interface (subclass can be provided to (Diffusion)Autoencoder1d)"""
 
-    def forward(self, x: Tensor) -> Tuple[Tensor, Any]:
+    def forward(
+        self, x: Tensor, with_info: bool = False
+    ) -> Union[Tensor, Tuple[Tensor, Any]]:
         raise NotImplementedError()
+
+
+def gaussian_sample(mean: Tensor, logvar: Tensor) -> Tensor:
+    std = torch.exp(0.5 * logvar)
+    eps = torch.randn_like(std)
+    sample = mean + std * eps
+    return sample
+
+
+def kl_loss(mean: Tensor, logvar: Tensor) -> Tensor:
+    losses = mean ** 2 + logvar.exp() - logvar - 1
+    loss = reduce(losses, "b ... -> 1", "mean").item()
+    return loss
+
+
+class Variational(Bottleneck):
+    def __init__(self, channels: int, loss_weight: float = 1.0):
+        super().__init__()
+        self.loss_weight = loss_weight
+        self.to_mean_and_logvar = Conv1d(
+            in_channels=channels,
+            out_channels=channels * 2,
+            kernel_size=1,
+        )
+
+    def forward(
+        self, x: Tensor, with_info: bool = False
+    ) -> Union[Tensor, Tuple[Tensor, Any]]:
+        mean_and_logvar = self.to_mean_and_logvar(x)
+        mean, logvar = torch.chunk(mean_and_logvar, chunks=2, dim=1)
+        logvar = torch.clamp(logvar, -30.0, 20.0)
+        out = gaussian_sample(mean, logvar)
+        loss = kl_loss(mean, logvar) * self.loss_weight
+        return (out, dict(loss=loss)) if with_info else out
 
 
 class AutoEncoder1d(nn.Module):
@@ -1208,18 +1244,28 @@ class AutoEncoder1d(nn.Module):
             factor=patch_factor,
         )
 
+    def forward(
+        self, x: Tensor, with_info: bool = False
+    ) -> Union[Tensor, Tuple[Tensor, Any]]:
+        z, info = self.encode(x, with_info=True)
+        y = self.decode(z)
+        return (y, info) if with_info else y
+
     def encode(
         self, x: Tensor, with_info: bool = False
     ) -> Union[Tensor, Tuple[Tensor, Any]]:
-
+        xs = []
         x = self.to_in(x)
         for downsample in self.downsamples:
             x = downsample(x)
+            xs += [x]
+        info = dict(xs=xs)
 
         if exists(self.bottleneck):
-            x, info = self.bottleneck(x)
-            return (x, info) if with_info else x
-        return x
+            x, info_bottleneck = self.bottleneck(x, with_info=True)
+            info = {**info, **info_bottleneck}
+
+        return (x, info) if with_info else x
 
     def decode(self, x: Tensor) -> Tensor:
         for upsample in self.upsamples:

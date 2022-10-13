@@ -24,4 +24,10 @@ from .model import (
     DiffusionUpsampler1d,
     Model1d,
 )
-from .modules import AutoEncoder1d, MultiEncoder1d, UNet1d, UNetConditional1d
+from .modules import (
+    AutoEncoder1d,
+    MultiEncoder1d,
+    UNet1d,
+    UNetConditional1d,
+    Variational,
+)

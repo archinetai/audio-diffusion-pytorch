@@ -5,9 +5,10 @@ from torch import Tensor, nn
 
 from .diffusion import (
     AEulerSampler,
+    Diffusion,
     DiffusionSampler,
-    Distribution,
     KarrasSchedule,
+    KDiffusion,
     Sampler,
     Schedule,
     VDiffusion,
@@ -20,7 +21,7 @@ from .modules import (
     UNet1d,
     UNetConditional1d,
 )
-from .utils import default, downsample, exists, to_list, upsample
+from .utils import default, downsample, exists, groupby_kwargs_prefix, to_list, upsample
 
 """
 Diffusion Classes (generic for 1d data)
@@ -29,20 +30,20 @@ Diffusion Classes (generic for 1d data)
 
 class Model1d(nn.Module):
     def __init__(
-        self,
-        diffusion_sigma_distribution: Distribution,
-        use_classifier_free_guidance: bool = False,
-        **kwargs
+        self, diffusion_type: str, use_classifier_free_guidance: bool = False, **kwargs
     ):
         super().__init__()
+        diffusion_kwargs, kwargs = groupby_kwargs_prefix("diffusion_", kwargs)
 
         UNet = UNetConditional1d if use_classifier_free_guidance else UNet1d
-
         self.unet = UNet(**kwargs)
 
-        self.diffusion = VDiffusion(
-            net=self.unet, sigma_distribution=diffusion_sigma_distribution
-        )
+        if diffusion_type == "v":
+            self.diffusion: Diffusion = VDiffusion(net=self.unet, **diffusion_kwargs)
+        elif diffusion_type == "k":
+            self.diffusion = KDiffusion(net=self.unet, **diffusion_kwargs)
+        else:
+            raise ValueError(f"diffusion_type must be v or k, found {diffusion_type}")
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
         return self.diffusion(x, **kwargs)
@@ -53,7 +54,7 @@ class Model1d(nn.Module):
         num_steps: int,
         sigma_schedule: Schedule,
         sampler: Sampler,
-        **kwargs
+        **kwargs,
     ) -> Tensor:
         diffusion_sampler = DiffusionSampler(
             diffusion=self.diffusion,
@@ -71,7 +72,7 @@ class DiffusionUpsampler1d(Model1d):
         factor: Union[int, Sequence[int]],
         factor_features: Optional[int] = None,
         *args,
-        **kwargs
+        **kwargs,
     ):
         self.factors = to_list(factor)
         self.use_conditioning = exists(factor_features)
@@ -144,7 +145,7 @@ class DiffusionAutoencoder1d(Model1d):
         bottleneck: Optional[Bottleneck] = None,
         encoder_num_blocks: Optional[Sequence[int]] = None,
         encoder_out_layers: int = 0,
-        **kwargs
+        **kwargs,
     ):
         self.in_channels = in_channels
         encoder_num_blocks = default(encoder_num_blocks, num_blocks)
@@ -240,6 +241,7 @@ def get_default_model_kwargs():
         use_skip_scale=True,
         use_context_time=True,
         use_magnitude_channels=False,
+        diffusion_type="v",
         diffusion_sigma_distribution=VDistribution(),
     )
 
@@ -289,7 +291,7 @@ class AudioDiffusionConditional(Model1d):
         embedding_features: int,
         embedding_max_length: int,
         embedding_mask_proba: float = 0.1,
-        **kwargs
+        **kwargs,
     ):
         self.embedding_mask_proba = embedding_mask_proba
         default_kwargs = dict(
