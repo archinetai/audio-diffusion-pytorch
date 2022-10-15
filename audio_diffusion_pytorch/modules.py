@@ -1211,7 +1211,7 @@ class Variational(Bottleneck):
         logvar = torch.clamp(logvar, -30.0, 20.0)
         out = gaussian_sample(mean, logvar)
         loss = kl_loss(mean, logvar) * self.loss_weight
-        return (out, dict(loss=loss)) if with_info else out
+        return (out, dict(loss=loss, mean=mean, logvar=logvar)) if with_info else out
 
 
 class AutoEncoder1d(nn.Module):
