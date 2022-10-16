@@ -414,7 +414,10 @@ class TransformerBlock(nn.Module):
 
         if self.use_cross_attention:
             self.cross_attention = Attention(
-                features=features, num_heads=num_heads, head_features=head_features
+                features=features,
+                num_heads=num_heads,
+                head_features=head_features,
+                context_features=context_features,
             )
 
         self.feed_forward = FeedForward(features=features, multiplier=multiplier)
@@ -592,6 +595,7 @@ class DownsampleBlock1d(nn.Module):
                 num_heads=attention_heads,
                 head_features=attention_features,
                 multiplier=attention_multiplier,
+                context_features=context_embedding_features,
             )
 
         if self.use_extract:
@@ -692,6 +696,7 @@ class UpsampleBlock1d(nn.Module):
                 num_heads=attention_heads,
                 head_features=attention_features,
                 multiplier=attention_multiplier,
+                context_features=context_embedding_features,
             )
 
         self.upsample = Upsample1d(
@@ -776,6 +781,7 @@ class BottleneckBlock1d(nn.Module):
                 num_heads=attention_heads,
                 head_features=attention_features,
                 multiplier=attention_multiplier,
+                context_features=context_embedding_features,
             )
 
         self.post_block = ResnetBlock1d(
