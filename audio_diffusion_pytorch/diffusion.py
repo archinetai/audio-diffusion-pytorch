@@ -161,7 +161,7 @@ class VDiffusion(Diffusion):
         x_pred = self.net(c_in * x_noisy, self.sigma_to_t(sigmas), **kwargs)
 
         # Compute v-objective target
-        v_target = (x - c_skip * x_noisy) / c_out
+        v_target = (x - c_skip * x_noisy) / (c_out + 1e-7)
 
         # Compute loss
         loss = F.mse_loss(x_pred, v_target)
