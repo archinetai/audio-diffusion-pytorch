@@ -8,6 +8,7 @@ from .diffusion import (
     KarrasSampler,
     KarrasSchedule,
     KDiffusion,
+    LinearSchedule,
     LogNormalDistribution,
     Sampler,
     Schedule,
