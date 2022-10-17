@@ -12,8 +12,11 @@ from .diffusion import (
     Sampler,
     Schedule,
     SpanBySpanComposer,
+    UniformDistribution,
     VDiffusion,
-    VDistribution,
+    VKDiffusion,
+    VKDistribution,
+    VSampler,
 )
 from .model import (
     AudioDiffusionAutoencoder,

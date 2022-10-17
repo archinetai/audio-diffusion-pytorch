@@ -171,7 +171,8 @@ y = unet(x, t) # [3, 1, 32768], compute 3 samples of ~1.5 seconds at 22050Hz wit
 
 #### Training
 ```python
-from audio_diffusion_pytorch import KDiffusion, VDiffusion, LogNormalDistribution, VDistribution
+from audio_diffusion_pytorch import KDiffusion, LogNormalDistribution
+from audio_diffusion_pytorch import VDiffusion, UniformDistribution
 
 # Either use KDiffusion
 diffusion = KDiffusion(
@@ -184,7 +185,7 @@ diffusion = KDiffusion(
 # Or use VDiffusion
 diffusion = VDiffusion(
     net=unet,
-    sigma_distribution=VDistribution()
+    sigma_distribution=UniformDistribution()
 )
 
 x = torch.randn(3, 1, 2 ** 18) # Batch of training audio samples

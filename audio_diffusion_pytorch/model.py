@@ -4,15 +4,15 @@ import torch
 from torch import Tensor, nn
 
 from .diffusion import (
-    AEulerSampler,
-    Diffusion,
     DiffusionSampler,
-    KarrasSchedule,
     KDiffusion,
+    LinearSchedule,
     Sampler,
     Schedule,
+    UniformDistribution,
     VDiffusion,
-    VDistribution,
+    VKDiffusion,
+    VSampler,
 )
 from .modules import (
     Bottleneck,
@@ -38,12 +38,15 @@ class Model1d(nn.Module):
         UNet = UNetConditional1d if use_classifier_free_guidance else UNet1d
         self.unet = UNet(**kwargs)
 
-        if diffusion_type == "v":
-            self.diffusion: Diffusion = VDiffusion(net=self.unet, **diffusion_kwargs)
-        elif diffusion_type == "k":
-            self.diffusion = KDiffusion(net=self.unet, **diffusion_kwargs)
-        else:
-            raise ValueError(f"diffusion_type must be v or k, found {diffusion_type}")
+        # Check valid diffusion type
+        diffusion_classes = [VDiffusion, KDiffusion, VKDiffusion]
+        aliases = [t.alias for t in diffusion_classes]  # type: ignore
+        message = f"diffusion_type='{diffusion_type}' must be one of {*aliases,}"
+        assert diffusion_type in aliases, message
+
+        for XDiffusion in diffusion_classes:
+            if XDiffusion.alias == diffusion_type:  # type: ignore
+                self.diffusion = XDiffusion(net=self.unet, **diffusion_kwargs)
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
         return self.diffusion(x, **kwargs)
@@ -242,14 +245,14 @@ def get_default_model_kwargs():
         use_context_time=True,
         use_magnitude_channels=False,
         diffusion_type="v",
-        diffusion_sigma_distribution=VDistribution(),
+        diffusion_sigma_distribution=UniformDistribution(),
     )
 
 
 def get_default_sampling_kwargs():
     return dict(
-        sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0),
-        sampler=AEulerSampler(),
+        sigma_schedule=LinearSchedule(),
+        sampler=VSampler(),
     )
 
 
