@@ -388,7 +388,7 @@ class VSampler(Sampler):
                 alpha, beta = self.get_alpha_beta(sigmas[i + 1].item())
                 x = x_pred * alpha + x_eps * beta
 
-        return x
+        return x_pred
 
 
 class KarrasSampler(Sampler):
