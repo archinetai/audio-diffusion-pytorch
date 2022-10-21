@@ -238,6 +238,7 @@ def get_default_model_kwargs():
         attention_heads=8,
         attention_features=64,
         attention_multiplier=2,
+        attention_use_rel_pos=False,
         resnet_groups=8,
         kernel_multiplier_downsample=2,
         use_nearest_upsample=False,
