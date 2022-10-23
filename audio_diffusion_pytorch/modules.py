@@ -1364,7 +1364,7 @@ class Noiser(Bottleneck):
         return (x, info) if with_info else x
 
 
-class AutoEncoder1d(nn.Module):
+class Encoder1d(nn.Module):
     def __init__(
         self,
         in_channels: int,
@@ -1375,16 +1375,10 @@ class AutoEncoder1d(nn.Module):
         multipliers: Sequence[int],
         factors: Sequence[int],
         num_blocks: Sequence[int],
-        use_noisy: bool = False,
-        bottleneck: Union[Bottleneck, List[Bottleneck]] = [],
-        use_magnitude_channels: bool = False,
+        out_channels: Optional[int] = None,
     ):
         super().__init__()
         num_layers = len(multipliers) - 1
-        self.bottlenecks = nn.ModuleList(to_list(bottleneck))
-        self.use_noisy = use_noisy
-        self.use_magnitude_channels = use_magnitude_channels
-
         assert len(factors) >= num_layers and len(num_blocks) >= num_layers
 
         self.to_in = Patcher(
@@ -1408,10 +1402,66 @@ class AutoEncoder1d(nn.Module):
             ]
         )
 
+        self.to_out = (
+            nn.Conv1d(
+                in_channels=channels * multipliers[-1],
+                out_channels=out_channels,
+                kernel_size=1,
+            )
+            if exists(out_channels)
+            else nn.Identity()
+        )
+
+    def forward(
+        self, x: Tensor, with_info: bool = False
+    ) -> Union[Tensor, Tuple[Tensor, Any]]:
+        xs = []
+        x = self.to_in(x)
+
+        for downsample in self.downsamples:
+            x = downsample(x)
+            xs += [x]
+
+        x = self.to_out(x)
+
+        info = dict(xs=xs)
+        return (x, info) if with_info else x
+
+
+class Decoder1d(nn.Module):
+    def __init__(
+        self,
+        out_channels: int,
+        channels: int,
+        patch_blocks: int,
+        patch_factor: int,
+        resnet_groups: int,
+        multipliers: Sequence[int],
+        factors: Sequence[int],
+        num_blocks: Sequence[int],
+        use_magnitude_channels: bool = False,
+        in_channels: Optional[int] = None,
+    ):
+        super().__init__()
+        num_layers = len(multipliers) - 1
+        self.use_magnitude_channels = use_magnitude_channels
+
+        assert len(factors) >= num_layers and len(num_blocks) >= num_layers
+
+        self.to_in = (
+            Conv1d(
+                in_channels=in_channels,
+                out_channels=channels * multipliers[-1],
+                kernel_size=1,
+            )
+            if exists(in_channels)
+            else nn.Identity()
+        )
+
         self.upsamples = nn.ModuleList(
             [
                 UpsampleBlock1d(
-                    in_channels=channels * multipliers[i + 1] * (use_noisy + 1),
+                    in_channels=channels * multipliers[i + 1],
                     out_channels=channels * multipliers[i],
                     factor=factors[i],
                     num_groups=resnet_groups,
@@ -1424,10 +1474,71 @@ class AutoEncoder1d(nn.Module):
         )
 
         self.to_out = Unpatcher(
-            in_channels=channels * (use_noisy + 1),
-            out_channels=in_channels * (2 if use_magnitude_channels else 1),
+            in_channels=channels,
+            out_channels=out_channels * (2 if use_magnitude_channels else 1),
             blocks=patch_blocks,
             factor=patch_factor,
+        )
+
+    def forward(self, x: Tensor) -> Union[Tensor, Tuple[Tensor, Any]]:
+        x = self.to_in(x)
+
+        for upsample in self.upsamples:
+            x = upsample(x)
+
+        x = self.to_out(x)
+
+        if self.use_magnitude_channels:
+            x = merge_magnitude_channels(x)
+
+        return x
+
+
+class AutoEncoder1d(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        channels: int,
+        patch_blocks: int,
+        patch_factor: int,
+        resnet_groups: int,
+        multipliers: Sequence[int],
+        factors: Sequence[int],
+        num_blocks: Sequence[int],
+        use_noisy: bool = False,
+        bottleneck: Union[Bottleneck, List[Bottleneck]] = [],
+        bottleneck_channels: Optional[int] = None,
+        use_magnitude_channels: bool = False,
+    ):
+        super().__init__()
+        num_layers = len(multipliers) - 1
+        self.bottlenecks = nn.ModuleList(to_list(bottleneck))
+
+        assert len(factors) >= num_layers and len(num_blocks) >= num_layers
+
+        self.encoder = Encoder1d(
+            in_channels=in_channels,
+            channels=channels,
+            patch_blocks=patch_blocks,
+            patch_factor=patch_factor,
+            resnet_groups=resnet_groups,
+            multipliers=multipliers,
+            factors=factors,
+            num_blocks=num_blocks,
+            out_channels=bottleneck_channels,
+        )
+
+        self.decoder = Decoder1d(
+            in_channels=bottleneck_channels,
+            out_channels=in_channels,
+            channels=channels,
+            patch_blocks=patch_blocks,
+            patch_factor=patch_factor,
+            resnet_groups=resnet_groups,
+            multipliers=multipliers,
+            factors=factors,
+            num_blocks=num_blocks,
+            use_magnitude_channels=use_magnitude_channels,
         )
 
     def forward(
@@ -1440,12 +1551,7 @@ class AutoEncoder1d(nn.Module):
     def encode(
         self, x: Tensor, with_info: bool = False
     ) -> Union[Tensor, Tuple[Tensor, Any]]:
-        xs = []
-        x = self.to_in(x)
-        for downsample in self.downsamples:
-            x = downsample(x)
-            xs += [x]
-        info = dict(xs=xs)
+        x, info = self.encoder(x, with_info=True)
 
         for bottleneck in self.bottlenecks:
             x, info_bottleneck = bottleneck(x, with_info=True)
@@ -1454,20 +1560,7 @@ class AutoEncoder1d(nn.Module):
         return (x, info) if with_info else x
 
     def decode(self, x: Tensor) -> Tensor:
-        for upsample in self.upsamples:
-            if self.use_noisy:
-                x = torch.cat([x, torch.randn_like(x)], dim=1)
-            x = upsample(x)
-
-        if self.use_noisy:
-            x = torch.cat([x, torch.randn_like(x)], dim=1)
-
-        x = self.to_out(x)
-
-        if self.use_magnitude_channels:
-            x = merge_magnitude_channels(x)
-
-        return x
+        return self.decoder(x)
 
 
 class MultiEncoder1d(nn.Module):

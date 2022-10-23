@@ -30,6 +30,8 @@ from .model import (
 )
 from .modules import (
     AutoEncoder1d,
+    Decoder1d,
+    Encoder1d,
     MultiEncoder1d,
     Noiser,
     T5Embedder,
