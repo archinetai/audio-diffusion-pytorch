@@ -1381,7 +1381,7 @@ class AutoEncoder1d(nn.Module):
     ):
         super().__init__()
         num_layers = len(multipliers) - 1
-        self.bottlenecks = to_list(bottleneck)
+        self.bottlenecks = nn.ModuleList(to_list(bottleneck))
         self.use_noisy = use_noisy
         self.use_magnitude_channels = use_magnitude_channels
 
