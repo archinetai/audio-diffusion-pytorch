@@ -32,6 +32,7 @@ from .modules import (
     AutoEncoder1d,
     MultiEncoder1d,
     T5Embedder,
+    Tanh,
     UNet1d,
     UNetConditional1d,
     Variational,

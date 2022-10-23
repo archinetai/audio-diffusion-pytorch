@@ -1,6 +1,6 @@
 import math
 from math import pi
-from typing import Any, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -9,7 +9,7 @@ from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many
 from torch import Tensor, einsum
 
-from .utils import default, exists, prod
+from .utils import default, exists, prod, to_list
 
 """
 Utils
@@ -1341,6 +1341,15 @@ class Variational(Bottleneck):
         return (out, dict(loss=loss, mean=mean, logvar=logvar)) if with_info else out
 
 
+class Tanh(Bottleneck):
+    def forward(
+        self, x: Tensor, with_info: bool = False
+    ) -> Union[Tensor, Tuple[Tensor, Any]]:
+        x = torch.tanh(x)
+        info: Dict = dict()
+        return (x, info) if with_info else x
+
+
 class AutoEncoder1d(nn.Module):
     def __init__(
         self,
@@ -1353,12 +1362,12 @@ class AutoEncoder1d(nn.Module):
         factors: Sequence[int],
         num_blocks: Sequence[int],
         use_noisy: bool = False,
-        bottleneck: Optional[Bottleneck] = None,
+        bottleneck: Union[Bottleneck, List[Bottleneck]] = [],
         use_magnitude_channels: bool = False,
     ):
         super().__init__()
         num_layers = len(multipliers) - 1
-        self.bottleneck = bottleneck
+        self.bottlenecks = to_list(bottleneck)
         self.use_noisy = use_noisy
         self.use_magnitude_channels = use_magnitude_channels
 
@@ -1424,8 +1433,8 @@ class AutoEncoder1d(nn.Module):
             xs += [x]
         info = dict(xs=xs)
 
-        if exists(self.bottleneck):
-            x, info_bottleneck = self.bottleneck(x, with_info=True)
+        for bottleneck in self.bottlenecks:
+            x, info_bottleneck = bottleneck(x, with_info=True)
             info = {**info, **info_bottleneck}
 
         return (x, info) if with_info else x
