@@ -1350,6 +1350,20 @@ class Tanh(Bottleneck):
         return (x, info) if with_info else x
 
 
+class Noiser(Bottleneck):
+    def __init__(self, sigma: float = 1.0):
+        super().__init__()
+        self.sigma = sigma
+
+    def forward(
+        self, x: Tensor, with_info: bool = False
+    ) -> Union[Tensor, Tuple[Tensor, Any]]:
+        if self.training:
+            x = torch.randn_like(x) * self.sigma + x
+        info: Dict = dict()
+        return (x, info) if with_info else x
+
+
 class AutoEncoder1d(nn.Module):
     def __init__(
         self,

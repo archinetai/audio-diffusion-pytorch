@@ -31,6 +31,7 @@ from .model import (
 from .modules import (
     AutoEncoder1d,
     MultiEncoder1d,
+    Noiser,
     T5Embedder,
     Tanh,
     UNet1d,
