@@ -57,6 +57,7 @@ class Model1d(nn.Module):
         num_steps: int,
         sigma_schedule: Schedule,
         sampler: Sampler,
+        clamp: bool,
         **kwargs,
     ) -> Tensor:
         diffusion_sampler = DiffusionSampler(
@@ -64,6 +65,7 @@ class Model1d(nn.Module):
             sampler=sampler,
             sigma_schedule=sigma_schedule,
             num_steps=num_steps,
+            clamp=clamp,
         )
         return diffusion_sampler(noise, **kwargs)
 
@@ -251,10 +253,7 @@ def get_default_model_kwargs():
 
 
 def get_default_sampling_kwargs():
-    return dict(
-        sigma_schedule=LinearSchedule(),
-        sampler=VSampler(),
-    )
+    return dict(sigma_schedule=LinearSchedule(), sampler=VSampler(), clamp=True)
 
 
 class AudioDiffusionModel(Model1d):

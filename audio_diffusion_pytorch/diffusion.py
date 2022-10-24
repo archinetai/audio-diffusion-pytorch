@@ -555,12 +555,14 @@ class DiffusionSampler(nn.Module):
         sampler: Sampler,
         sigma_schedule: Schedule,
         num_steps: Optional[int] = None,
+        clamp: bool = True,
     ):
         super().__init__()
         self.denoise_fn = diffusion.denoise_fn
         self.sampler = sampler
         self.sigma_schedule = sigma_schedule
         self.num_steps = num_steps
+        self.clamp = clamp
 
         # Check sampler is compatible with diffusion type
         sampler_class = sampler.__class__.__name__
@@ -581,7 +583,7 @@ class DiffusionSampler(nn.Module):
         fn = lambda *a, **ka: self.denoise_fn(*a, **{**ka, **kwargs})  # noqa
         # Sample using sampler
         x = self.sampler(noise, fn=fn, sigmas=sigmas, num_steps=num_steps)
-        x = x.clamp(-1.0, 1.0)
+        x = x.clamp(-1.0, 1.0) if self.clamp else x
         return x
 
 
