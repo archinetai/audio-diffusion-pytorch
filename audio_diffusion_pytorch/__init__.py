@@ -34,6 +34,7 @@ from .modules import (
     Encoder1d,
     MultiEncoder1d,
     Noiser,
+    STFTAutoEncoder1d,
     T5Embedder,
     Tanh,
     UNet1d,
