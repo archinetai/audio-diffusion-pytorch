@@ -1508,11 +1508,13 @@ class AutoEncoder1d(nn.Module):
         use_noisy: bool = False,
         bottleneck: Union[Bottleneck, List[Bottleneck]] = [],
         bottleneck_channels: Optional[int] = None,
+        out_channels: Optional[int] = None,
         use_magnitude_channels: bool = False,
     ):
         super().__init__()
         num_layers = len(multipliers) - 1
         self.bottlenecks = nn.ModuleList(to_list(bottleneck))
+        out_channels = default(out_channels, in_channels)
 
         assert len(factors) >= num_layers and len(num_blocks) >= num_layers
 
@@ -1530,7 +1532,7 @@ class AutoEncoder1d(nn.Module):
 
         self.decoder = Decoder1d(
             in_channels=bottleneck_channels,
-            out_channels=in_channels,
+            out_channels=out_channels,
             channels=channels,
             patch_blocks=patch_blocks,
             patch_factor=patch_factor,
