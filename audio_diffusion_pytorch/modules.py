@@ -1777,9 +1777,14 @@ class STFTAutoEncoder1d(AutoEncoder1d):
         log_magnitude = rearrange(torch.log(magnitude), "b c f t -> b (c f) t")
         return super().encode(log_magnitude, with_info)
 
-    def decode(self, z: Tensor) -> Tensor:
+    def decode(  # type: ignore
+        self, z: Tensor, with_info: bool = False
+    ) -> Union[Tensor, Tuple[Tensor, Any]]:
         f = self.frequency_channels
         stft = super().decode(z)
         stft = rearrange(stft, "b (c f i) t -> b (c i) f t", i=2, f=f)
         log_magnitude, phase = stft.chunk(chunks=2, dim=1)
-        return self.stft.decode(magnitude=torch.exp(log_magnitude), phase=phase)
+        magnitude = torch.exp(log_magnitude)
+        wave = self.stft.decode(magnitude, phase)
+        info = dict(magnitude=magnitude, phase=phase)
+        return (wave, info) if with_info else wave
