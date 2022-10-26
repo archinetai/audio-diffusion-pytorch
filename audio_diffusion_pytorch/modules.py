@@ -1019,7 +1019,7 @@ class UNet1d(nn.Module):
 
         self.to_in = Patcher(
             in_channels=in_channels + context_channels[0],
-            out_channels=channels,
+            out_channels=channels * multipliers[0],
             blocks=patch_blocks,
             factor=patch_factor,
             context_mapping_features=context_mapping_features,
@@ -1093,7 +1093,7 @@ class UNet1d(nn.Module):
         )
 
         self.to_out = Unpatcher(
-            in_channels=channels,
+            in_channels=channels * multipliers[0],
             out_channels=out_channels * (2 if use_magnitude_channels else 1),
             blocks=patch_blocks,
             factor=patch_factor,
@@ -1383,7 +1383,7 @@ class Encoder1d(nn.Module):
 
         self.to_in = Patcher(
             in_channels=in_channels,
-            out_channels=channels,
+            out_channels=channels * multipliers[0],
             blocks=patch_blocks,
             factor=patch_factor,
         )
@@ -1474,7 +1474,7 @@ class Decoder1d(nn.Module):
         )
 
         self.to_out = Unpatcher(
-            in_channels=channels,
+            in_channels=channels * multipliers[0],
             out_channels=out_channels * (2 if use_magnitude_channels else 1),
             blocks=patch_blocks,
             factor=patch_factor,
