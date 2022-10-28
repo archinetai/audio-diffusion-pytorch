@@ -62,10 +62,16 @@ def group_dict_by_prefix(prefix: str, d: Dict) -> Tuple[Dict, Dict]:
     return return_dicts
 
 
-def groupby_kwargs_prefix(prefix: str, d: Dict) -> Tuple[Dict, Dict]:
+def groupby(prefix: str, d: Dict, keep_prefix: bool = False) -> Tuple[Dict, Dict]:
     kwargs_with_prefix, kwargs = group_dict_by_prefix(prefix, d)
+    if keep_prefix:
+        return kwargs_with_prefix, kwargs
     kwargs_no_prefix = {k[len(prefix) :]: v for k, v in kwargs_with_prefix.items()}
     return kwargs_no_prefix, kwargs
+
+
+def prefix_dict(prefix: str, d: Dict) -> Dict:
+    return {prefix + str(k): v for k, v in d.items()}
 
 
 """

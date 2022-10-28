@@ -32,16 +32,4 @@ from .model import (
     DiffusionVocoder1d,
     Model1d,
 )
-from .modules import (
-    AutoEncoder1d,
-    Decoder1d,
-    Encoder1d,
-    MultiEncoder1d,
-    Noiser,
-    STFTAutoEncoder1d,
-    T5Embedder,
-    Tanh,
-    UNet1d,
-    UNetConditional1d,
-    Variational,
-)
+from .modules import T5Embedder, UNet1d, UNetConditional1d

@@ -1,5 +1,5 @@
 from math import floor, log, pi
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -8,7 +8,7 @@ from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many
 from torch import Tensor, einsum
 
-from .utils import closest_power_2, default, exists, prod, to_list
+from .utils import closest_power_2, default, exists, groupby
 
 """
 Utils
@@ -524,7 +524,7 @@ class Transformer1d(nn.Module):
         num_heads: int,
         head_features: int,
         multiplier: int,
-        use_rel_pos: bool,
+        use_rel_pos: bool = False,
         rel_pos_num_buckets: Optional[int] = None,
         rel_pos_max_distance: Optional[int] = None,
         context_features: Optional[int] = None,
@@ -913,15 +913,6 @@ class BottleneckBlock1d(nn.Module):
         return x
 
 
-def get_norm_scale(x: Tensor, quantile: float):
-    return torch.quantile(x.abs(), quantile, dim=-1, keepdim=True) + 1e-7
-
-
-def merge_magnitude_channels(x: Tensor):
-    waveform, magnitude = torch.chunk(x, chunks=2, dim=1)
-    return torch.sigmoid(waveform) * torch.tanh(magnitude)
-
-
 """
 UNet
 """
@@ -938,23 +929,18 @@ class UNet1d(nn.Module):
         factors: Sequence[int],
         num_blocks: Sequence[int],
         attentions: Sequence[int],
-        attention_heads: int,
-        attention_features: int,
-        attention_multiplier: int,
         resnet_groups: int,
         kernel_multiplier_downsample: int,
         use_nearest_upsample: bool,
         use_skip_scale: bool,
         use_context_time: bool,
-        use_magnitude_channels: bool,
-        norm_quantile: float = 0.0,
+        use_stft: bool = False,
+        use_stft_context: bool = False,
         out_channels: Optional[int] = None,
         context_features: Optional[int] = None,
         context_channels: Optional[Sequence[int]] = None,
         context_embedding_features: Optional[int] = None,
-        attention_use_rel_pos: bool = False,
-        attention_rel_pos_max_distance: Optional[int] = None,
-        attention_rel_pos_num_buckets: Optional[int] = None,
+        **kwargs,
     ):
         super().__init__()
         out_channels = default(out_channels, in_channels)
@@ -964,10 +950,14 @@ class UNet1d(nn.Module):
         use_context_channels = len(context_channels) > 0
         context_mapping_features = None
 
+        attention_kwargs, kwargs = groupby("attention_", kwargs, keep_prefix=True)
+
         self.num_layers = num_layers
         self.use_context_time = use_context_time
         self.use_context_features = use_context_features
         self.use_context_channels = use_context_channels
+        self.use_stft = use_stft
+        self.use_stft_context = use_stft_context
 
         context_channels_pad_length = num_layers + 1 - len(context_channels)
         context_channels = context_channels + [0] * context_channels_pad_length
@@ -977,10 +967,6 @@ class UNet1d(nn.Module):
             has_context = [c > 0 for c in context_channels]
             self.has_context = has_context
             self.channels_ids = [sum(has_context[:i]) for i in range(len(has_context))]
-
-        self.use_norm = norm_quantile > 0.0
-        self.norm_quantile = norm_quantile
-        self.use_magnitude_channels = use_magnitude_channels
 
         assert (
             len(factors) == num_layers
@@ -1016,6 +1002,16 @@ class UNet1d(nn.Module):
                 nn.GELU(),
             )
 
+        if use_stft:
+            stft_kwargs, kwargs = groupby("stft_", kwargs)
+            assert "num_fft" in stft_kwargs, "stft_num_fft required if use_stft=True"
+            stft_channels = (stft_kwargs["num_fft"] // 2 + 1) * 2
+            in_channels *= stft_channels
+            out_channels *= stft_channels
+            context_channels[0] *= stft_channels if use_stft_context else 1
+            assert exists(in_channels) and exists(out_channels)
+            self.stft = STFT(**stft_kwargs)
+
         self.to_in = Patcher(
             in_channels=in_channels + context_channels[0],
             out_channels=channels * multipliers[0],
@@ -1039,12 +1035,7 @@ class UNet1d(nn.Module):
                     use_pre_downsample=True,
                     use_skip=True,
                     num_transformer_blocks=attentions[i],
-                    attention_heads=attention_heads,
-                    attention_features=attention_features,
-                    attention_multiplier=attention_multiplier,
-                    attention_use_rel_pos=attention_use_rel_pos,
-                    attention_rel_pos_max_distance=attention_rel_pos_max_distance,
-                    attention_rel_pos_num_buckets=attention_rel_pos_num_buckets,
+                    **attention_kwargs,
                 )
                 for i in range(num_layers)
             ]
@@ -1056,12 +1047,7 @@ class UNet1d(nn.Module):
             context_embedding_features=context_embedding_features,
             num_groups=resnet_groups,
             num_transformer_blocks=attentions[-1],
-            attention_heads=attention_heads,
-            attention_features=attention_features,
-            attention_multiplier=attention_multiplier,
-            attention_use_rel_pos=attention_use_rel_pos,
-            attention_rel_pos_max_distance=attention_rel_pos_max_distance,
-            attention_rel_pos_num_buckets=attention_rel_pos_num_buckets,
+            **attention_kwargs,
         )
 
         self.upsamples = nn.ModuleList(
@@ -1080,12 +1066,7 @@ class UNet1d(nn.Module):
                     use_skip=True,
                     skip_channels=channels * multipliers[i + 1],
                     num_transformer_blocks=attentions[i],
-                    attention_heads=attention_heads,
-                    attention_features=attention_features,
-                    attention_multiplier=attention_multiplier,
-                    attention_use_rel_pos=attention_use_rel_pos,
-                    attention_rel_pos_max_distance=attention_rel_pos_max_distance,
-                    attention_rel_pos_num_buckets=attention_rel_pos_num_buckets,
+                    **attention_kwargs,
                 )
                 for i in reversed(range(num_layers))
             ]
@@ -1093,7 +1074,7 @@ class UNet1d(nn.Module):
 
         self.to_out = Unpatcher(
             in_channels=channels * multipliers[0],
-            out_channels=out_channels * (2 if use_magnitude_channels else 1),
+            out_channels=out_channels,
             blocks=patch_blocks,
             factor=patch_factor,
             context_mapping_features=context_mapping_features,
@@ -1117,6 +1098,8 @@ class UNet1d(nn.Module):
         num_channels = self.context_channels[layer]
         message = f"Expected context with {channels} channels at index {channels_id}"
         assert channels.shape[1] == num_channels, message
+        # STFT channels if requested
+        channels = self.stft.encode1d(channels) if self.use_stft_context else channels  # type: ignore # noqa
         return channels
 
     def get_mapping(
@@ -1149,15 +1132,13 @@ class UNet1d(nn.Module):
         channels_list: Optional[Sequence[Tensor]] = None,
         embedding: Optional[Tensor] = None,
     ) -> Tensor:
-        # Concat context channels at layer 0 if provided
         channels = self.get_channels(channels_list, layer=0)
+        # Apply stft if required
+        x = self.stft.encode1d(x) if self.use_stft else x  # type: ignore
+        # Concat context channels at layer 0 if provided
         x = torch.cat([x, channels], dim=1) if exists(channels) else x
         # Compute mapping from time and features
         mapping = self.get_mapping(time, features)
-        # Compute norm scale
-        scale = get_norm_scale(x, self.norm_quantile) if self.use_norm else 1.0
-        x = x / scale
-
         x = self.to_in(x, mapping)
         skips_list = [x]
 
@@ -1176,11 +1157,12 @@ class UNet1d(nn.Module):
 
         x += skips_list.pop()
         x = self.to_out(x, mapping)
+        x = self.stft.decode1d(x) if self.use_stft else x
 
-        if self.use_magnitude_channels:
-            x = merge_magnitude_channels(x)
+        return x
 
-        return x * scale
+
+""" Conditioning Modules """
 
 
 class FixedEmbedding(nn.Module):
@@ -1206,9 +1188,6 @@ def rand_bool(shape: Any, proba: float, device: Any = None) -> Tensor:
         return torch.zeros(shape, device=device, dtype=torch.bool)
     else:
         return torch.bernoulli(torch.full(shape, proba, device=device)).to(torch.bool)
-
-
-""" Conditioning """
 
 
 class UNetConditional1d(UNet1d):
@@ -1293,399 +1272,8 @@ class T5Embedder(nn.Module):
 
 
 """
-Encoders / Decoders
+Audio Transforms
 """
-
-
-class Bottleneck(nn.Module):
-    """Bottleneck interface (subclass can be provided to (Diffusion)Autoencoder1d)"""
-
-    def forward(
-        self, x: Tensor, with_info: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Any]]:
-        raise NotImplementedError()
-
-
-def gaussian_sample(mean: Tensor, logvar: Tensor) -> Tensor:
-    std = torch.exp(0.5 * logvar)
-    eps = torch.randn_like(std)
-    sample = mean + std * eps
-    return sample
-
-
-def kl_loss(mean: Tensor, logvar: Tensor) -> Tensor:
-    losses = mean ** 2 + logvar.exp() - logvar - 1
-    loss = reduce(losses, "b ... -> 1", "mean").item()
-    return loss
-
-
-class Variational(Bottleneck):
-    def __init__(self, channels: int, loss_weight: float = 1.0):
-        super().__init__()
-        self.loss_weight = loss_weight
-        self.to_mean_and_logvar = Conv1d(
-            in_channels=channels,
-            out_channels=channels * 2,
-            kernel_size=1,
-        )
-
-    def forward(
-        self, x: Tensor, with_info: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Any]]:
-        mean_and_logvar = self.to_mean_and_logvar(x)
-        mean, logvar = torch.chunk(mean_and_logvar, chunks=2, dim=1)
-        logvar = torch.clamp(logvar, -30.0, 20.0)
-        out = gaussian_sample(mean, logvar)
-        loss = kl_loss(mean, logvar) * self.loss_weight
-        return (out, dict(loss=loss, mean=mean, logvar=logvar)) if with_info else out
-
-
-class Tanh(Bottleneck):
-    def forward(
-        self, x: Tensor, with_info: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Any]]:
-        x = torch.tanh(x)
-        info: Dict = dict()
-        return (x, info) if with_info else x
-
-
-class Noiser(Bottleneck):
-    def __init__(self, sigma: float = 1.0):
-        super().__init__()
-        self.sigma = sigma
-
-    def forward(
-        self, x: Tensor, with_info: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Any]]:
-        if self.training:
-            x = torch.randn_like(x) * self.sigma + x
-        info: Dict = dict()
-        return (x, info) if with_info else x
-
-
-class Encoder1d(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        channels: int,
-        patch_blocks: int,
-        patch_factor: int,
-        resnet_groups: int,
-        multipliers: Sequence[int],
-        factors: Sequence[int],
-        num_blocks: Sequence[int],
-        out_channels: Optional[int] = None,
-    ):
-        super().__init__()
-        num_layers = len(multipliers) - 1
-        assert len(factors) >= num_layers and len(num_blocks) >= num_layers
-
-        self.to_in = Patcher(
-            in_channels=in_channels,
-            out_channels=channels * multipliers[0],
-            blocks=patch_blocks,
-            factor=patch_factor,
-        )
-
-        self.downsamples = nn.ModuleList(
-            [
-                DownsampleBlock1d(
-                    in_channels=channels * multipliers[i],
-                    out_channels=channels * multipliers[i + 1],
-                    factor=factors[i],
-                    kernel_multiplier=2,
-                    num_groups=resnet_groups,
-                    num_layers=num_blocks[i],
-                )
-                for i in range(num_layers)
-            ]
-        )
-
-        self.to_out = (
-            nn.Conv1d(
-                in_channels=channels * multipliers[-1],
-                out_channels=out_channels,
-                kernel_size=1,
-            )
-            if exists(out_channels)
-            else nn.Identity()
-        )
-
-    def forward(
-        self, x: Tensor, with_info: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Any]]:
-        xs = []
-        x = self.to_in(x)
-
-        for downsample in self.downsamples:
-            x = downsample(x)
-            xs += [x]
-
-        x = self.to_out(x)
-
-        info = dict(xs=xs)
-        return (x, info) if with_info else x
-
-
-class Decoder1d(nn.Module):
-    def __init__(
-        self,
-        out_channels: int,
-        channels: int,
-        patch_blocks: int,
-        patch_factor: int,
-        resnet_groups: int,
-        multipliers: Sequence[int],
-        factors: Sequence[int],
-        num_blocks: Sequence[int],
-        use_magnitude_channels: bool = False,
-        in_channels: Optional[int] = None,
-    ):
-        super().__init__()
-        num_layers = len(multipliers) - 1
-        self.use_magnitude_channels = use_magnitude_channels
-
-        assert len(factors) >= num_layers and len(num_blocks) >= num_layers
-
-        self.to_in = (
-            Conv1d(
-                in_channels=in_channels,
-                out_channels=channels * multipliers[-1],
-                kernel_size=1,
-            )
-            if exists(in_channels)
-            else nn.Identity()
-        )
-
-        self.upsamples = nn.ModuleList(
-            [
-                UpsampleBlock1d(
-                    in_channels=channels * multipliers[i + 1],
-                    out_channels=channels * multipliers[i],
-                    factor=factors[i],
-                    num_groups=resnet_groups,
-                    num_layers=num_blocks[i],
-                    use_nearest=False,
-                    use_skip=False,
-                )
-                for i in reversed(range(num_layers))
-            ]
-        )
-
-        self.to_out = Unpatcher(
-            in_channels=channels * multipliers[0],
-            out_channels=out_channels * (2 if use_magnitude_channels else 1),
-            blocks=patch_blocks,
-            factor=patch_factor,
-        )
-
-    def forward(self, x: Tensor) -> Union[Tensor, Tuple[Tensor, Any]]:
-        x = self.to_in(x)
-
-        for upsample in self.upsamples:
-            x = upsample(x)
-
-        x = self.to_out(x)
-
-        if self.use_magnitude_channels:
-            x = merge_magnitude_channels(x)
-
-        return x
-
-
-class AutoEncoder1d(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        channels: int,
-        patch_blocks: int,
-        patch_factor: int,
-        resnet_groups: int,
-        multipliers: Sequence[int],
-        factors: Sequence[int],
-        num_blocks: Sequence[int],
-        use_noisy: bool = False,
-        bottleneck: Union[Bottleneck, List[Bottleneck]] = [],
-        bottleneck_channels: Optional[int] = None,
-        out_channels: Optional[int] = None,
-        use_magnitude_channels: bool = False,
-    ):
-        super().__init__()
-        num_layers = len(multipliers) - 1
-        self.bottlenecks = nn.ModuleList(to_list(bottleneck))
-        out_channels = default(out_channels, in_channels)
-
-        assert len(factors) >= num_layers and len(num_blocks) >= num_layers
-
-        self.encoder = Encoder1d(
-            in_channels=in_channels,
-            channels=channels,
-            patch_blocks=patch_blocks,
-            patch_factor=patch_factor,
-            resnet_groups=resnet_groups,
-            multipliers=multipliers,
-            factors=factors,
-            num_blocks=num_blocks,
-            out_channels=bottleneck_channels,
-        )
-
-        self.decoder = Decoder1d(
-            in_channels=bottleneck_channels,
-            out_channels=out_channels,
-            channels=channels,
-            patch_blocks=patch_blocks,
-            patch_factor=patch_factor,
-            resnet_groups=resnet_groups,
-            multipliers=multipliers,
-            factors=factors,
-            num_blocks=num_blocks,
-            use_magnitude_channels=use_magnitude_channels,
-        )
-
-    def forward(
-        self, x: Tensor, with_info: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Any]]:
-        z, info = self.encode(x, with_info=True)
-        y = self.decode(z)
-        return (y, info) if with_info else y
-
-    def encode(
-        self, x: Tensor, with_info: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Any]]:
-        x, info = self.encoder(x, with_info=True)
-
-        for bottleneck in self.bottlenecks:
-            x, info_bottleneck = bottleneck(x, with_info=True)
-            info = {**info, **info_bottleneck}
-
-        return (x, info) if with_info else x
-
-    def decode(self, x: Tensor) -> Tensor:
-        return self.decoder(x)
-
-
-class MultiEncoder1d(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        channels: int,
-        patch_factor: int,
-        patch_blocks: int,
-        resnet_groups: int,
-        kernel_multiplier_downsample: int,
-        num_layers: int,
-        num_layers_out: int,
-        latent_channels: int,
-        multipliers: Sequence[int],
-        factors: Sequence[int],
-        num_blocks: Sequence[int],
-    ):
-        super().__init__()
-        # Latent space factor
-        self.factor = (patch_factor ** patch_blocks) * prod(factors[0:num_layers])
-        self.num_layers = num_layers
-        self.num_layers_out = num_layers_out
-        self.channels_list = self.get_channels_list(
-            in_channels, channels, multipliers, num_layers, num_layers_out
-        )
-
-        assert num_layers_out <= num_layers
-        assert (
-            len(multipliers) >= num_layers + 1
-            and len(factors) >= num_layers
-            and len(num_blocks) >= num_layers
-        )
-
-        self.to_in = Patcher(
-            in_channels=in_channels,
-            out_channels=channels,
-            blocks=patch_blocks,
-            factor=patch_factor,
-        )
-
-        self.downsamples = nn.ModuleList(
-            [
-                DownsampleBlock1d(
-                    in_channels=channels * multipliers[i],
-                    out_channels=channels * multipliers[i + 1],
-                    factor=factors[i],
-                    kernel_multiplier=kernel_multiplier_downsample,
-                    num_groups=resnet_groups,
-                    num_layers=num_blocks[i],
-                )
-                for i in range(num_layers)
-            ]
-        )
-
-        pre_latent_channels = channels * multipliers[num_layers]
-
-        self.to_latent = ResnetBlock1d(
-            in_channels=pre_latent_channels,
-            out_channels=latent_channels,
-            num_groups=resnet_groups,
-        )
-
-        self.from_latent = ResnetBlock1d(
-            in_channels=latent_channels,
-            out_channels=pre_latent_channels,
-            num_groups=resnet_groups,
-        )
-
-        self.upsamples = nn.ModuleList(
-            [
-                UpsampleBlock1d(
-                    in_channels=channels * multipliers[i + 1],
-                    out_channels=channels * multipliers[i],
-                    factor=factors[i],
-                    num_groups=resnet_groups,
-                    num_layers=num_blocks[i],
-                    use_nearest=False,
-                    use_skip=False,
-                    extract_channels=channels * multipliers[i],
-                )
-                for i in reversed(range(num_layers - num_layers_out, num_layers))
-            ]
-        )
-
-        self.to_out = Unpatcher(
-            in_channels=channels,
-            out_channels=in_channels,
-            blocks=patch_blocks,
-            factor=patch_factor,
-        )
-
-    def get_channels_list(
-        self,
-        in_channels: int,
-        channels: int,
-        multipliers: Sequence[int],
-        num_layers: int,
-        num_layers_out: int,
-    ) -> List[int]:
-        channels_list = [in_channels]
-        channels_list += [channels * m for m in multipliers[1 : num_layers + 1]]
-        empty_channels = num_layers - num_layers_out
-        channels_list = [0] * empty_channels + channels_list[-num_layers_out - 1 :]
-        return channels_list
-
-    def encode(self, x: Tensor) -> Tensor:
-        x = self.to_in(x)
-        for downsample in self.downsamples:
-            x = downsample(x)
-        latent = self.to_latent(x)
-        return latent
-
-    def decode(self, latent: Tensor) -> List[Tensor]:
-        x = self.from_latent(latent)
-        channels_list = []
-        channels = x
-        for upsample in self.upsamples:
-            channels_list += [channels]
-            x, channels = upsample(x)
-        if self.num_layers_out == self.num_layers:
-            x = self.to_out(x)
-        channels_list += [x]
-        return channels_list[::-1]
 
 
 class STFT(nn.Module):
@@ -1742,49 +1330,15 @@ class STFT(nn.Module):
         wave = rearrange(wave, "(b c) t -> b c t", b=b)
         return wave
 
+    def encode1d(
+        self, wave: Tensor, stacked: bool = True
+    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+        magnitude, phase = self.encode(wave)
+        magnitude, phase = rearrange_many((magnitude, phase), "b c f l -> b (c f) l")
+        return torch.cat((magnitude, phase), dim=1) if stacked else (magnitude, phase)
 
-class STFTAutoEncoder1d(AutoEncoder1d):
-    def __init__(
-        self,
-        in_channels: int,
-        length: int,
-        num_fft: int = 1024,
-        hop_length: int = 256,
-        window_length: int = 1024,
-        **kwargs,
-    ):
-        self.frequency_channels = num_fft // 2 + 1
-
-        super().__init__(
-            in_channels=in_channels * self.frequency_channels,
-            out_channels=in_channels * self.frequency_channels * 2,
-            patch_blocks=1,
-            patch_factor=1,
-            **kwargs,
-        )
-
-        self.stft = STFT(
-            num_fft=num_fft,
-            hop_length=hop_length,
-            window_length=window_length,
-            length=length,
-        )
-
-    def encode(
-        self, wave: Tensor, with_info: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Any]]:
-        magnitude, phase = self.stft.encode(wave)
-        log_magnitude = rearrange(torch.log(magnitude), "b c f t -> b (c f) t")
-        return super().encode(log_magnitude, with_info)
-
-    def decode(  # type: ignore
-        self, z: Tensor, with_info: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Any]]:
-        f = self.frequency_channels
-        stft = super().decode(z)
-        stft = rearrange(stft, "b (c f i) t -> b (c i) f t", i=2, f=f)
-        log_magnitude, phase = stft.chunk(chunks=2, dim=1)
-        magnitude = torch.exp(log_magnitude)
-        wave = self.stft.decode(magnitude, phase)
-        info = dict(magnitude=magnitude, phase=phase)
-        return (wave, info) if with_info else wave
+    def decode1d(self, magnitude_and_phase: Tensor) -> Tensor:
+        f = self.num_fft // 2 + 1
+        magnitude, phase = magnitude_and_phase.chunk(chunks=2, dim=1)
+        mag, phase = rearrange_many((magnitude, phase), "b (c f) l -> b c f l", f=f)
+        return self.decode(mag, phase)
