@@ -1,6 +1,8 @@
+from math import pi
 from typing import Any, Optional, Sequence, Tuple, Union
 
 import torch
+from einops import rearrange
 from torch import Tensor, nn
 
 from .diffusion import (
@@ -15,6 +17,7 @@ from .diffusion import (
     VSampler,
 )
 from .modules import (
+    STFT,
     Bottleneck,
     MultiEncoder1d,
     SinusoidalEmbedding,
@@ -223,6 +226,62 @@ class DiffusionAutoencoder1d(Model1d):
         return super().sample(noise, **{**default_kwargs, **kwargs})  # type: ignore
 
 
+class DiffusionVocoder1d(Model1d):
+    def __init__(
+        self,
+        in_channels: int,
+        vocoder_num_fft: int,
+        **kwargs,
+    ):
+        self.frequency_channels = vocoder_num_fft // 2 + 1
+        spectrogram_channels = in_channels * self.frequency_channels
+
+        vocoder_kwargs, kwargs = groupby_kwargs_prefix("vocoder_", kwargs)
+        default_kwargs = dict(
+            in_channels=spectrogram_channels, context_channels=[spectrogram_channels]
+        )
+
+        super().__init__(**{**default_kwargs, **kwargs})  # type: ignore
+        self.stft = STFT(num_fft=vocoder_num_fft, **vocoder_kwargs)
+
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
+        # Get magnitude and phase of true wave
+        magnitude, phase = self.stft.encode(x)
+        magnitude = rearrange(magnitude, "b c f t -> b (c f) t")
+        phase = rearrange(phase, "b c f t -> b (c f) t")
+        # Get diffusion phase loss while conditioning on magnitude (/pi [-1,1] range)
+        return self.diffusion(phase / pi, channels_list=[magnitude], **kwargs)
+
+    def sample(self, spectrogram: Tensor, **kwargs):  # type: ignore
+        b, c, f, t, device = *spectrogram.shape, spectrogram.device
+        magnitude = rearrange(spectrogram, "b c f t -> b (c f) t")
+        noise = torch.randn((b, c * f, t), device=device)
+        default_kwargs = dict(channels_list=[magnitude])
+        phase = super().sample(noise, **{**default_kwargs, **kwargs})  # type: ignore # noqa
+        phase = rearrange(phase, "b (c f) t -> b c f t", c=c)
+        wave = self.stft.decode(spectrogram, phase * pi)
+        return wave
+
+
+class DiffusionUpphaser1d(DiffusionUpsampler1d):
+    def __init__(self, **kwargs):
+        vocoder_kwargs, kwargs = groupby_kwargs_prefix("vocoder_", kwargs)
+        super().__init__(**kwargs)
+        self.stft = STFT(**vocoder_kwargs)
+
+    def random_rephase(self, x: Tensor) -> Tensor:
+        magnitude, phase = self.stft.encode(x)
+        phase_random = (torch.rand_like(phase) - 0.5) * 2 * pi
+        wave = self.stft.decode(magnitude, phase_random)
+        return wave
+
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
+        rephased = self.random_rephase(x)
+        resampled, factors = self.random_reupsample(rephased)
+        features = self.to_features(factors) if self.use_conditioning else None
+        return self.diffusion(x, channels_list=[resampled], features=features, **kwargs)
+
+
 """
 Audio Diffusion Classes (specific for 1d audio data)
 """
@@ -315,3 +374,49 @@ class AudioDiffusionConditional(Model1d):
             embedding_scale=5.0,
         )
         return super().sample(*args, **{**default_kwargs, **kwargs})
+
+
+class AudioDiffusionVocoder(DiffusionVocoder1d):
+    def __init__(self, in_channels: int, **kwargs):
+        default_kwargs = dict(
+            in_channels=in_channels,
+            vocoder_num_fft=1023,
+            channels=32,
+            patch_blocks=1,
+            patch_factor=1,
+            multipliers=[64, 32, 16, 8, 4, 2, 1],
+            factors=[1, 1, 1, 1, 1, 1],
+            num_blocks=[1, 1, 1, 1, 1, 1],
+            attentions=[0, 0, 0, 1, 1, 1],
+            attention_heads=8,
+            attention_features=64,
+            attention_multiplier=2,
+            attention_use_rel_pos=False,
+            resnet_groups=8,
+            kernel_multiplier_downsample=2,
+            use_nearest_upsample=False,
+            use_skip_scale=True,
+            use_context_time=True,
+            use_magnitude_channels=False,
+            diffusion_type="v",
+            diffusion_sigma_distribution=UniformDistribution(),
+        )
+        super().__init__(**{**default_kwargs, **kwargs})  # type: ignore
+
+    def sample(self, *args, **kwargs):
+        default_kwargs = dict(**get_default_sampling_kwargs())
+        return super().sample(*args, **{**default_kwargs, **kwargs})
+
+
+class AudioDiffusionUpphaser(DiffusionUpphaser1d):
+    def __init__(self, in_channels: int, **kwargs):
+        default_kwargs = dict(
+            **get_default_model_kwargs(),
+            in_channels=in_channels,
+            context_channels=[in_channels],
+            factor=1,
+        )
+        super().__init__(**{**default_kwargs, **kwargs})  # type: ignore
+
+    def sample(self, *args, **kwargs):
+        return super().sample(*args, **{**get_default_sampling_kwargs(), **kwargs})

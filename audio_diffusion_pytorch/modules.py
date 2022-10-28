@@ -1,5 +1,4 @@
-import math
-from math import pi
+from math import floor, log, pi
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
@@ -9,7 +8,7 @@ from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many
 from torch import Tensor, einsum
 
-from .utils import default, exists, prod, to_list
+from .utils import closest_power_2, default, exists, prod, to_list
 
 """
 Utils
@@ -338,7 +337,7 @@ class RelativePositionBias(nn.Module):
             max_exact
             + (
                 torch.log(n.float() / max_exact)
-                / math.log(max_distance / max_exact)
+                / log(max_distance / max_exact)
                 * (num_buckets - max_exact)
             ).long()
         )
@@ -587,7 +586,7 @@ class SinusoidalEmbedding(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         device, half_dim = x.device, self.dim // 2
-        emb = torch.tensor(math.log(10000) / (half_dim - 1), device=device)
+        emb = torch.tensor(log(10000) / (half_dim - 1), device=device)
         emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
         emb = rearrange(x, "i -> i 1") * rearrange(emb, "j -> 1 j")
         return torch.cat((emb.sin(), emb.cos()), dim=-1)
@@ -1692,17 +1691,17 @@ class MultiEncoder1d(nn.Module):
 class STFT(nn.Module):
     def __init__(
         self,
-        length: int,
-        num_fft: int = 1024,
-        hop_length: int = 256,
-        window_length: int = 1024,
+        num_fft: int = 1023,
+        hop_length: Optional[int] = None,
+        window_length: Optional[int] = None,
+        length: Optional[int] = None,
     ):
         super().__init__()
         self.num_fft = num_fft
-        self.hop_length = hop_length
-        self.window_length = window_length
+        self.hop_length = default(hop_length, floor(num_fft // 4))
+        self.window_length = default(window_length, num_fft)
         self.length = length
-        self.register_buffer("window", torch.hann_window(window_length))
+        self.register_buffer("window", torch.hann_window(self.window_length))
 
     def encode(self, wave: Tensor) -> Tuple[Tensor, Tensor]:
         b = wave.shape[0]
@@ -1725,11 +1724,12 @@ class STFT(nn.Module):
         return mag, phase
 
     def decode(self, magnitude: Tensor, phase: Tensor) -> Tensor:
-        b = magnitude.shape[0]
+        b, l = magnitude.shape[0], magnitude.shape[-1]  # noqa
         assert magnitude.shape == phase.shape, "magnitude and phase must be same shape"
         real = rearrange(magnitude * torch.cos(phase), "b c f l -> (b c) f l")
         imag = rearrange(magnitude * torch.sin(phase), "b c f l -> (b c) f l")
         stft = torch.stack([real, imag], dim=-1)
+        length = closest_power_2(l * self.hop_length)
 
         wave = torch.istft(
             stft,
@@ -1737,7 +1737,7 @@ class STFT(nn.Module):
             hop_length=self.hop_length,
             win_length=self.window_length,
             window=self.window,  # type: ignore
-            length=self.length,
+            length=default(self.length, length),
         )
         wave = rearrange(wave, "(b c) t -> b c t", b=b)
         return wave

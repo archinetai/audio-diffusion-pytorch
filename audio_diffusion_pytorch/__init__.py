@@ -23,9 +23,13 @@ from .model import (
     AudioDiffusionAutoencoder,
     AudioDiffusionConditional,
     AudioDiffusionModel,
+    AudioDiffusionUpphaser,
     AudioDiffusionUpsampler,
+    AudioDiffusionVocoder,
     DiffusionAutoencoder1d,
+    DiffusionUpphaser1d,
     DiffusionUpsampler1d,
+    DiffusionVocoder1d,
     Model1d,
 )
 from .modules import (
