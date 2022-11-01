@@ -1096,7 +1096,7 @@ class UNet1d(nn.Module):
         assert exists(channels), message
         # Check channels
         num_channels = self.context_channels[layer]
-        message = f"Expected context with {channels} channels at index {channels_id}"
+        message = f"Expected context with {num_channels} channels at idx {channels_id}"
         assert channels.shape[1] == num_channels, message
         # STFT channels if requested
         channels = self.stft.encode1d(channels) if self.use_stft_context else channels  # type: ignore # noqa
