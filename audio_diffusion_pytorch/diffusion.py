@@ -654,3 +654,39 @@ class SpanBySpanComposer(nn.Module):
             spans.append(second_half)
 
         return torch.cat(spans, dim=2)
+
+
+class XDiffusion(nn.Module):
+    def __init__(self, type: str, net: nn.Module, **kwargs):
+        super().__init__()
+
+        diffusion_classes = [VDiffusion, KDiffusion, VKDiffusion]
+        aliases = [t.alias for t in diffusion_classes]  # type: ignore
+        message = f"type='{type}' must be one of {*aliases,}"
+        assert type in aliases, message
+        self.net = net
+
+        for XDiffusion in diffusion_classes:
+            if XDiffusion.alias == type:  # type: ignore
+                self.diffusion = XDiffusion(net=net, **kwargs)
+
+    def forward(self, *args, **kwargs) -> Tensor:
+        return self.diffusion(*args, **kwargs)
+
+    def sample(
+        self,
+        noise: Tensor,
+        num_steps: int,
+        sigma_schedule: Schedule,
+        sampler: Sampler,
+        clamp: bool,
+        **kwargs,
+    ) -> Tensor:
+        diffusion_sampler = DiffusionSampler(
+            diffusion=self.diffusion,
+            sampler=sampler,
+            sigma_schedule=sigma_schedule,
+            num_steps=num_steps,
+            clamp=clamp,
+        )
+        return diffusion_sampler(noise, **kwargs)

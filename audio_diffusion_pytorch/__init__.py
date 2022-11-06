@@ -18,6 +18,7 @@ from .diffusion import (
     VKDiffusion,
     VKDistribution,
     VSampler,
+    XDiffusion,
 )
 from .model import (
     AudioDiffusionAutoencoder,

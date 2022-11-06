@@ -6,18 +6,8 @@ from audio_encoders_pytorch import Bottleneck, Encoder1d
 from einops import rearrange
 from torch import Tensor, nn
 
-from .diffusion import (
-    DiffusionSampler,
-    KDiffusion,
-    LinearSchedule,
-    Sampler,
-    Schedule,
-    UniformDistribution,
-    VDiffusion,
-    VKDiffusion,
-    VSampler,
-)
-from .modules import STFT, SinusoidalEmbedding, UNet1d, UNetConditional1d
+from .diffusion import LinearSchedule, UniformDistribution, VSampler, XDiffusion
+from .modules import STFT, Conv1d, SinusoidalEmbedding, UNet1d, UNetConditional1d
 from .utils import (
     default,
     downsample,
@@ -44,36 +34,15 @@ class Model1d(nn.Module):
         UNet = UNetConditional1d if use_classifier_free_guidance else UNet1d
         self.unet = UNet(**kwargs)
 
-        # Check valid diffusion type
-        diffusion_classes = [VDiffusion, KDiffusion, VKDiffusion]
-        aliases = [t.alias for t in diffusion_classes]  # type: ignore
-        message = f"diffusion_type='{diffusion_type}' must be one of {*aliases,}"
-        assert diffusion_type in aliases, message
-
-        for XDiffusion in diffusion_classes:
-            if XDiffusion.alias == diffusion_type:  # type: ignore
-                self.diffusion = XDiffusion(net=self.unet, **diffusion_kwargs)
+        self.diffusion = XDiffusion(
+            type=diffusion_type, net=self.unet, **diffusion_kwargs
+        )
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
         return self.diffusion(x, **kwargs)
 
-    def sample(
-        self,
-        noise: Tensor,
-        num_steps: int,
-        sigma_schedule: Schedule,
-        sampler: Sampler,
-        clamp: bool,
-        **kwargs,
-    ) -> Tensor:
-        diffusion_sampler = DiffusionSampler(
-            diffusion=self.diffusion,
-            sampler=sampler,
-            sigma_schedule=sigma_schedule,
-            num_steps=num_steps,
-            clamp=clamp,
-        )
-        return diffusion_sampler(noise, **kwargs)
+    def sample(self, *args, **kwargs) -> Tensor:
+        return self.diffusion.sample(*args, **kwargs)
 
 
 class DiffusionUpsampler1d(Model1d):
@@ -139,69 +108,70 @@ class DiffusionUpsampler1d(Model1d):
         return super().sample(noise, **{**default_kwargs, **kwargs})  # type: ignore
 
 
-class DiffusionAutoencoder1d(Model1d):
+class DiffusionAutoencoder1d(nn.Module):
     def __init__(
         self,
         in_channels: int,
-        channels: int,
-        patch_blocks: int,
-        patch_factor: int,
-        multipliers: Sequence[int],
-        factors: Sequence[int],
-        num_blocks: Sequence[int],
-        resnet_groups: int,
-        kernel_multiplier_downsample: int,
-        encoder_depth: int,
-        encoder_num_blocks: Optional[Sequence[int]] = None,
+        encoder_inject_depth: int,
+        encoder_channels: int,
+        encoder_factors: Sequence[int],
+        encoder_multipliers: Sequence[int],
+        diffusion_type: str,
+        encoder_patch_size: int = 1,
         bottleneck: Union[Bottleneck, Sequence[Bottleneck]] = [],
         bottleneck_channels: Optional[int] = None,
-        use_stft: bool = False,
         **kwargs,
     ):
+        super().__init__()
         self.in_channels = in_channels
-        encoder_num_blocks = default(encoder_num_blocks, num_blocks)
-        assert_message = "The number of encoder_num_blocks must match encoder_depth"
-        assert len(encoder_num_blocks) >= encoder_depth, assert_message
-        assert patch_blocks == 1, "patch_blocks != 1 not supported"
-        assert not use_stft, "use_stft not supported"
-        self.factor = patch_factor * prod(factors[0:encoder_depth])
 
-        context_channels = [0] * encoder_depth
+        encoder_kwargs, kwargs = groupby("encoder_", kwargs)
+        diffusion_kwargs, kwargs = groupby("diffusion_", kwargs)
+
+        # Compute context channels
+        context_channels = [0] * encoder_inject_depth
         if exists(bottleneck_channels):
             context_channels += [bottleneck_channels]
         else:
-            context_channels += [channels * multipliers[encoder_depth]]
+            context_channels += [encoder_channels * encoder_multipliers[-1]]
 
-        super().__init__(
-            in_channels=in_channels,
-            channels=channels,
-            patch_blocks=patch_blocks,
-            patch_factor=patch_factor,
-            multipliers=multipliers,
-            factors=factors,
-            num_blocks=num_blocks,
-            resnet_groups=resnet_groups,
-            kernel_multiplier_downsample=kernel_multiplier_downsample,
-            context_channels=context_channels,
-            **kwargs,
+        self.unet = UNet1d(
+            in_channels=in_channels, context_channels=context_channels, **kwargs
         )
 
-        self.bottlenecks = nn.ModuleList(to_list(bottleneck))
+        self.diffusion = XDiffusion(
+            type=diffusion_type, net=self.unet, **diffusion_kwargs
+        )
+
         self.encoder = Encoder1d(
             in_channels=in_channels,
-            channels=channels,
-            patch_size=patch_factor,
-            multipliers=multipliers[0 : encoder_depth + 1],
-            factors=factors[0:encoder_depth],
-            num_blocks=encoder_num_blocks[0:encoder_depth],
-            resnet_groups=resnet_groups,
+            channels=encoder_channels,
+            patch_size=encoder_patch_size,
+            factors=encoder_factors,
+            multipliers=encoder_multipliers,
             out_channels=bottleneck_channels,
+            **encoder_kwargs,
         )
+
+        if exists(bottleneck_channels):
+            self.to_bottleneck = Conv1d(
+                in_channels=encoder_channels * encoder_multipliers[-1],
+                out_channels=bottleneck_channels,
+                kernel_size=1,
+            )
+
+        self.encoder_downsample_factor = encoder_patch_size * prod(encoder_factors)
+        self.bottleneck_channels = bottleneck_channels
+        self.bottlenecks = nn.ModuleList(to_list(bottleneck))
 
     def encode(
         self, x: Tensor, with_info: bool = False
     ) -> Union[Tensor, Tuple[Tensor, Any]]:
         latent, info = self.encoder(x, with_info=True)
+        # Convert latent channels
+        if exists(self.bottleneck_channels):
+            latent = self.to_bottleneck(latent)
+        # Apply bottlenecks if present
         for bottleneck in self.bottlenecks:
             latent, info_bottleneck = bottleneck(latent, with_info=True)
             info = {**info, **prefix_dict("bottleneck_", info_bottleneck)}
@@ -215,13 +185,17 @@ class DiffusionAutoencoder1d(Model1d):
         return (loss, info) if with_info else loss
 
     def decode(self, latent: Tensor, **kwargs) -> Tensor:
-        b, length = latent.shape[0], latent.shape[2] * self.factor
+        b = latent.shape[0]
+        length = latent.shape[2] * self.encoder_downsample_factor
         # Compute noise by inferring shape from latent length
-        noise = torch.randn(b, self.in_channels, length).to(latent)
+        noise = torch.randn(b, self.in_channels, length, device=latent.device)
         # Compute context form latent
         default_kwargs = dict(channels_list=[latent])
         # Decode by sampling while conditioning on latent channels
-        return super().sample(noise, **{**default_kwargs, **kwargs})  # type: ignore
+        return self.sample(noise, **{**default_kwargs, **kwargs})
+
+    def sample(self, *args, **kwargs) -> Tensor:
+        return self.diffusion.sample(*args, **kwargs)
 
 
 class DiffusionVocoder1d(Model1d):
@@ -339,7 +313,14 @@ class AudioDiffusionUpsampler(DiffusionUpsampler1d):
 class AudioDiffusionAutoencoder(DiffusionAutoencoder1d):
     def __init__(self, *args, **kwargs):
         default_kwargs = dict(
-            **get_default_model_kwargs(), encoder_depth=4, encoder_channels=64
+            **get_default_model_kwargs(),
+            encoder_inject_depth=6,
+            encoder_channels=16,
+            encoder_patch_size=16,
+            encoder_multipliers=[1, 2, 4, 4, 4, 4, 4],
+            encoder_factors=[4, 4, 4, 2, 2, 2],
+            encoder_num_blocks=[2, 2, 2, 2, 2, 2],
+            bottleneck_channels=64,
         )
         super().__init__(*args, **{**default_kwargs, **kwargs})  # type: ignore
 
@@ -398,7 +379,6 @@ class AudioDiffusionVocoder(DiffusionVocoder1d):
             use_nearest_upsample=False,
             use_skip_scale=True,
             use_context_time=True,
-            use_magnitude_channels=False,
             diffusion_type="v",
             diffusion_sigma_distribution=UniformDistribution(),
         )
