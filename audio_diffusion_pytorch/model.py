@@ -7,7 +7,7 @@ from einops import rearrange
 from torch import Tensor, nn
 
 from .diffusion import LinearSchedule, UniformDistribution, VSampler, XDiffusion
-from .modules import STFT, Conv1d, SinusoidalEmbedding, UNet1d, UNetConditional1d
+from .modules import STFT, SinusoidalEmbedding, UNet1d, UNetConditional1d
 from .utils import (
     default,
     downsample,
@@ -153,13 +153,6 @@ class DiffusionAutoencoder1d(nn.Module):
             **encoder_kwargs,
         )
 
-        if exists(bottleneck_channels):
-            self.to_bottleneck = Conv1d(
-                in_channels=encoder_channels * encoder_multipliers[-1],
-                out_channels=bottleneck_channels,
-                kernel_size=1,
-            )
-
         self.encoder_downsample_factor = encoder_patch_size * prod(encoder_factors)
         self.bottleneck_channels = bottleneck_channels
         self.bottlenecks = nn.ModuleList(to_list(bottleneck))
@@ -168,9 +161,6 @@ class DiffusionAutoencoder1d(nn.Module):
         self, x: Tensor, with_info: bool = False
     ) -> Union[Tensor, Tuple[Tensor, Any]]:
         latent, info = self.encoder(x, with_info=True)
-        # Convert latent channels
-        if exists(self.bottleneck_channels):
-            latent = self.to_bottleneck(latent)
         # Apply bottlenecks if present
         for bottleneck in self.bottlenecks:
             latent, info_bottleneck = bottleneck(latent, with_info=True)
