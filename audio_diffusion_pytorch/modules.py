@@ -1277,12 +1277,15 @@ Audio Transforms
 
 
 class STFT(nn.Module):
+    """Helper for torch stft and istft"""
+
     def __init__(
         self,
         num_fft: int = 1023,
-        hop_length: Optional[int] = None,
+        hop_length: int = 256,
         window_length: Optional[int] = None,
         length: Optional[int] = None,
+        use_complex: bool = False,
     ):
         super().__init__()
         self.num_fft = num_fft
@@ -1290,6 +1293,7 @@ class STFT(nn.Module):
         self.window_length = default(window_length, num_fft)
         self.length = length
         self.register_buffer("window", torch.hann_window(self.window_length))
+        self.use_complex = use_complex
 
     def encode(self, wave: Tensor) -> Tuple[Tensor, Tensor]:
         b = wave.shape[0]
@@ -1302,22 +1306,32 @@ class STFT(nn.Module):
             win_length=self.window_length,
             window=self.window,  # type: ignore
             return_complex=True,
+            normalized=True,
         )
 
-        mag = torch.sqrt(torch.clamp((stft.real ** 2) + (stft.imag ** 2), min=1e-8))
-        mag = rearrange(mag, "(b c) f l -> b c f l", b=b)
+        if self.use_complex:
+            # Returns real and imaginary
+            stft_a, stft_b = stft.real, stft.imag
+        else:
+            # Returns magnitude and phase matrices
+            magnitude, phase = torch.abs(stft), torch.angle(stft)
+            stft_a, stft_b = magnitude, phase
 
-        phase = torch.angle(stft)
-        phase = rearrange(phase, "(b c) f l -> b c f l", b=b)
-        return mag, phase
+        return rearrange_many((stft_a, stft_b), "(b c) f l -> b c f l", b=b)
 
-    def decode(self, magnitude: Tensor, phase: Tensor) -> Tensor:
-        b, l = magnitude.shape[0], magnitude.shape[-1]  # noqa
-        assert magnitude.shape == phase.shape, "magnitude and phase must be same shape"
-        real = rearrange(magnitude * torch.cos(phase), "b c f l -> (b c) f l")
-        imag = rearrange(magnitude * torch.sin(phase), "b c f l -> (b c) f l")
-        stft = torch.stack([real, imag], dim=-1)
+    def decode(self, stft_a: Tensor, stft_b: Tensor) -> Tensor:
+        b, l = stft_a.shape[0], stft_a.shape[-1]  # noqa
         length = closest_power_2(l * self.hop_length)
+
+        stft_a, stft_b = rearrange_many((stft_a, stft_b), "b c f l -> (b c) f l")
+
+        if self.use_complex:
+            real, imag = stft_a, stft_b
+        else:
+            magnitude, phase = stft_a, stft_b
+            real, imag = magnitude * torch.cos(phase), magnitude * torch.sin(phase)
+
+        stft = torch.stack([real, imag], dim=-1)
 
         wave = torch.istft(
             stft,
@@ -1326,19 +1340,20 @@ class STFT(nn.Module):
             win_length=self.window_length,
             window=self.window,  # type: ignore
             length=default(self.length, length),
+            normalized=True,
         )
-        wave = rearrange(wave, "(b c) t -> b c t", b=b)
-        return wave
+
+        return rearrange(wave, "(b c) t -> b c t", b=b)
 
     def encode1d(
         self, wave: Tensor, stacked: bool = True
     ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
-        magnitude, phase = self.encode(wave)
-        magnitude, phase = rearrange_many((magnitude, phase), "b c f l -> b (c f) l")
-        return torch.cat((magnitude, phase), dim=1) if stacked else (magnitude, phase)
+        stft_a, stft_b = self.encode(wave)
+        stft_a, stft_b = rearrange_many((stft_a, stft_b), "b c f l -> b (c f) l")
+        return torch.cat((stft_a, stft_b), dim=1) if stacked else (stft_a, stft_b)
 
-    def decode1d(self, magnitude_and_phase: Tensor) -> Tensor:
+    def decode1d(self, stft_pair: Tensor) -> Tensor:
         f = self.num_fft // 2 + 1
-        magnitude, phase = magnitude_and_phase.chunk(chunks=2, dim=1)
-        mag, phase = rearrange_many((magnitude, phase), "b (c f) l -> b c f l", f=f)
-        return self.decode(mag, phase)
+        stft_a, stft_b = stft_pair.chunk(chunks=2, dim=1)
+        stft_a, stft_b = rearrange_many((stft_a, stft_b), "b (c f) l -> b c f l", f=f)
+        return self.decode(stft_a, stft_b)
