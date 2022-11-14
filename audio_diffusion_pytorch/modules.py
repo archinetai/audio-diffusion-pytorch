@@ -1271,6 +1271,28 @@ class T5Embedder(nn.Module):
         return embedding
 
 
+class NumberEmbedder(nn.Module):
+    def __init__(
+        self,
+        features: int,
+        dim: int = 256,
+    ):
+        super().__init__()
+        self.features = features
+        self.embedding = TimePositionalEmbedding(dim=dim, out_features=features)
+
+    def forward(self, x: Union[List[float], Tensor]) -> Tensor:
+        if not torch.is_tensor(x):
+            device = next(self.embedding.parameters()).device
+            x = torch.tensor(x, device=device)
+        assert isinstance(x, Tensor)
+        shape = x.shape
+        x = rearrange(x, "... -> (...)")
+        embedding = self.embedding(x)
+        x = embedding.view(*shape, self.features)
+        return x  # type: ignore
+
+
 """
 Audio Transforms
 """

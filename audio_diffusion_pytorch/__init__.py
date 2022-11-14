@@ -33,4 +33,4 @@ from .model import (
     DiffusionVocoder1d,
     Model1d,
 )
-from .modules import T5Embedder, UNet1d, UNetConditional1d
+from .modules import NumberEmbedder, T5Embedder, UNet1d, UNetConditional1d

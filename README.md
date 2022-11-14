@@ -130,6 +130,16 @@ sampled = model.sample(
 )
 ```
 
+#### Number Conditional Generation
+
+```py
+from audio_diffusion_pytorch import NumberEmbedder
+
+embedder = NumberEmbedder(features=768)
+embedding = embedder([0.1, 0.2]) # [2, 768]
+```
+
+
 ## Usage with Components
 
 ### UNet1d
