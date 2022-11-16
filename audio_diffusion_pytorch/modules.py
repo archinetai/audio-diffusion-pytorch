@@ -938,6 +938,7 @@ class UNet1d(nn.Module):
         use_stft_context: bool = False,
         out_channels: Optional[int] = None,
         context_features: Optional[int] = None,
+        context_features_multiplier: int = 4,
         context_channels: Optional[Sequence[int]] = None,
         context_embedding_features: Optional[int] = None,
         **kwargs,
@@ -975,7 +976,7 @@ class UNet1d(nn.Module):
         )
 
         if use_context_time or use_context_features:
-            context_mapping_features = channels * 4
+            context_mapping_features = channels * context_features_multiplier
 
             self.to_mapping = nn.Sequential(
                 nn.Linear(context_mapping_features, context_mapping_features),
