@@ -350,7 +350,6 @@ Audio Diffusion Classes (specific for 1d audio data)
 def get_default_model_kwargs():
     return dict(
         channels=128,
-        patch_blocks=1,
         patch_factor=16,
         multipliers=[1, 2, 4, 4, 4, 4, 4],
         factors=[4, 4, 4, 2, 2, 2],
@@ -360,11 +359,6 @@ def get_default_model_kwargs():
         attention_features=64,
         attention_multiplier=2,
         attention_use_rel_pos=False,
-        resnet_groups=8,
-        kernel_multiplier_downsample=2,
-        use_nearest_upsample=False,
-        use_skip_scale=True,
-        use_context_time=True,
         diffusion_type="v",
         diffusion_sigma_distribution=UniformDistribution(),
     )
@@ -416,13 +410,6 @@ class AudioDiffusionAutoencoder(DiffusionAutoencoder1d):
 class AudioDiffusionMAE(DiffusionMAE1d):
     def __init__(self, *args, **kwargs):
         default_kwargs = dict(
-            patch_blocks=1,
-            patch_factor=1,
-            resnet_groups=8,
-            kernel_multiplier_downsample=2,
-            use_nearest_upsample=False,
-            use_skip_scale=True,
-            use_context_time=True,
             diffusion_type="v",
             diffusion_sigma_distribution=UniformDistribution(),
             stft_num_fft=1023,
@@ -470,8 +457,6 @@ class AudioDiffusionVocoder(DiffusionVocoder1d):
             stft_num_fft=1023,
             stft_hop_length=256,
             channels=512,
-            patch_blocks=1,
-            patch_factor=1,
             multipliers=[3, 2, 1, 1, 1, 1, 1, 1],
             factors=[1, 2, 2, 2, 2, 2, 2],
             num_blocks=[1, 1, 1, 1, 1, 1, 1],
@@ -480,11 +465,6 @@ class AudioDiffusionVocoder(DiffusionVocoder1d):
             attention_features=64,
             attention_multiplier=2,
             attention_use_rel_pos=False,
-            resnet_groups=8,
-            kernel_multiplier_downsample=2,
-            use_nearest_upsample=False,
-            use_skip_scale=True,
-            use_context_time=True,
             diffusion_type="v",
             diffusion_sigma_distribution=UniformDistribution(),
         )
