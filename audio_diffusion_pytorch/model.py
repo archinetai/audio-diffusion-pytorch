@@ -199,6 +199,9 @@ class DiffusionMAE1d(nn.Module):
         encoder_multipliers: Sequence[int],
         diffusion_type: str,
         stft_num_fft: int,
+        stft_hop_length: int,
+        stft_use_complex: bool,
+        stft_window_length: Optional[int] = None,
         encoder_patch_size: int = 1,
         bottleneck: Union[Bottleneck, Sequence[Bottleneck]] = [],
         bottleneck_channels: Optional[int] = None,
@@ -209,6 +212,7 @@ class DiffusionMAE1d(nn.Module):
 
         encoder_kwargs, kwargs = groupby("encoder_", kwargs)
         diffusion_kwargs, kwargs = groupby("diffusion_", kwargs)
+        stft_kwargs, kwargs = groupby("stft_", kwargs)
 
         # Compute context channels
         context_channels = [0] * encoder_inject_depth
@@ -218,16 +222,25 @@ class DiffusionMAE1d(nn.Module):
             context_channels += [encoder_channels * encoder_multipliers[-1]]
 
         self.spectrogram_channels = stft_num_fft // 2 + 1
+        self.stft_hop_length = stft_hop_length
+
+        self.encoder_stft = STFT(
+            num_fft=stft_num_fft,
+            hop_length=stft_hop_length,
+            window_length=stft_window_length,
+            use_complex=False,  # Magnitude encoding
+        )
 
         self.unet = UNet1d(
             in_channels=in_channels,
-            stft_num_fft=stft_num_fft,
             context_channels=context_channels,
             use_stft=True,
+            stft_use_complex=stft_use_complex,
+            stft_num_fft=stft_num_fft,
+            stft_hop_length=stft_hop_length,
+            stft_window_length=stft_window_length,
             **kwargs,
         )
-
-        self.stft = self.unet.stft
 
         self.diffusion = XDiffusion(
             type=diffusion_type, net=self.unet, **diffusion_kwargs
@@ -251,7 +264,7 @@ class DiffusionMAE1d(nn.Module):
         self, x: Tensor, with_info: bool = False
     ) -> Union[Tensor, Tuple[Tensor, Any]]:
         # Extract magnitude and encode
-        magnitude, _ = self.stft.encode(x)
+        magnitude, _ = self.encoder_stft.encode(x)
         magnitude_flat = rearrange(magnitude, "b c f t -> b (c f) t")
         latent, info = self.encoder(magnitude_flat, with_info=True)
         # Apply bottlenecks if present
@@ -270,7 +283,7 @@ class DiffusionMAE1d(nn.Module):
     def decode(self, latent: Tensor, **kwargs) -> Tensor:
         b = latent.shape[0]
         length = closest_power_2(
-            self.stft.hop_length * latent.shape[2] * self.encoder_downsample_factor
+            self.stft_hop_length * latent.shape[2] * self.encoder_downsample_factor
         )
         # Compute noise by inferring shape from latent length
         noise = torch.randn(b, self.in_channels, length, device=latent.device)
