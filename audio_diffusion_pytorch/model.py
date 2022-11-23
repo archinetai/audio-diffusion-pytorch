@@ -500,3 +500,18 @@ class AudioDiffusionUpphaser(DiffusionUpphaser1d):
 
     def sample(self, *args, **kwargs):
         return super().sample(*args, **{**get_default_sampling_kwargs(), **kwargs})
+
+
+""" Pretrained Models Helper """
+
+REVISION = {"dmae1d-ATC64-v1": "07885065867977af43b460bb9c1422bdc90c29a0"}
+
+
+class AudioModel:
+    @staticmethod
+    def from_pretrained(name: str) -> nn.Module:
+        from transformers import AutoModel
+
+        return AutoModel.from_pretrained(
+            f"archinetai/{name}", trust_remote_code=True, revision=REVISION[name]
+        )
