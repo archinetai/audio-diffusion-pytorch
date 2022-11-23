@@ -28,6 +28,7 @@ from .model import (
     AudioDiffusionUpsampler,
     AudioDiffusionVocoder,
     DiffusionAutoencoder1d,
+    DiffusionMAE1d,
     DiffusionUpphaser1d,
     DiffusionUpsampler1d,
     DiffusionVocoder1d,
