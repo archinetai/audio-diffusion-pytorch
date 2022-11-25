@@ -1247,6 +1247,19 @@ class UNetAll1d(UNetCFG1d, UNetNCCA1d):
         return UNetCFG1d.forward(self, *args, **kwargs)
 
 
+def XUNet1d(type: str = "base", **kwargs) -> UNet1d:
+    if type == "base":
+        return UNet1d(**kwargs)
+    elif type == "all":
+        return UNetAll1d(**kwargs)
+    elif type == "cfg":
+        return UNetCFG1d(**kwargs)
+    elif type == "ncca":
+        return UNetNCCA1d(**kwargs)
+    else:
+        raise ValueError(f"Unknown XUNet1d type: {type}")
+
+
 class T5Embedder(nn.Module):
     def __init__(self, model: str = "t5-base", max_length: int = 64):
         super().__init__()

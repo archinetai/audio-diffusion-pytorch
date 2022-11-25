@@ -150,8 +150,7 @@ from audio_diffusion_pytorch import UNet1d
 unet = UNet1d(
     in_channels=1,
     channels=128,
-    patch_factor=16,
-    patch_blocks=1,
+    patch_size=16,
     multipliers=[1, 2, 4, 4, 4, 4, 4],
     factors=[4, 4, 4, 2, 2, 2],
     attentions=[0, 0, 0, 1, 1, 1, 1],

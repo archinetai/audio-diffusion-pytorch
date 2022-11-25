@@ -35,4 +35,4 @@ from .model import (
     DiffusionVocoder1d,
     Model1d,
 )
-from .modules import NumberEmbedder, T5Embedder, UNet1d
+from .modules import NumberEmbedder, T5Embedder, UNet1d, XUNet1d

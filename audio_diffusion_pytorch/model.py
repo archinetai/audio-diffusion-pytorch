@@ -9,7 +9,7 @@ from torch import Tensor, nn
 from tqdm import tqdm
 
 from .diffusion import LinearSchedule, UniformDistribution, VSampler, XDiffusion
-from .modules import STFT, SinusoidalEmbedding, UNet1d, UNetCFG1d, rand_bool
+from .modules import STFT, SinusoidalEmbedding, XUNet1d, rand_bool
 from .utils import (
     closest_power_2,
     default,
@@ -28,18 +28,11 @@ Diffusion Classes (generic for 1d data)
 
 
 class Model1d(nn.Module):
-    def __init__(
-        self, diffusion_type: str, use_classifier_free_guidance: bool = False, **kwargs
-    ):
+    def __init__(self, unet_type: str = "base", **kwargs):
         super().__init__()
         diffusion_kwargs, kwargs = groupby("diffusion_", kwargs)
-
-        UNet = UNetCFG1d if use_classifier_free_guidance else UNet1d
-        self.unet = UNet(**kwargs)
-
-        self.diffusion = XDiffusion(
-            type=diffusion_type, net=self.unet, **diffusion_kwargs
-        )
+        self.unet = XUNet1d(type=unet_type, **kwargs)
+        self.diffusion = XDiffusion(net=self.unet, **diffusion_kwargs)
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
         return self.diffusion(x, **kwargs)
@@ -119,10 +112,10 @@ class DiffusionAutoencoder1d(nn.Module):
         encoder_channels: int,
         encoder_factors: Sequence[int],
         encoder_multipliers: Sequence[int],
-        diffusion_type: str,
         encoder_patch_size: int = 1,
         bottleneck: Union[Bottleneck, Sequence[Bottleneck]] = [],
         bottleneck_channels: Optional[int] = None,
+        unet_type: str = "base",
         **kwargs,
     ):
         super().__init__()
@@ -138,13 +131,14 @@ class DiffusionAutoencoder1d(nn.Module):
         else:
             context_channels += [encoder_channels * encoder_multipliers[-1]]
 
-        self.unet = UNet1d(
-            in_channels=in_channels, context_channels=context_channels, **kwargs
+        self.unet = XUNet1d(
+            type=unet_type,
+            in_channels=in_channels,
+            context_channels=context_channels,
+            **kwargs,
         )
 
-        self.diffusion = XDiffusion(
-            type=diffusion_type, net=self.unet, **diffusion_kwargs
-        )
+        self.diffusion = XDiffusion(net=self.unet, **diffusion_kwargs)
 
         self.encoder = Encoder1d(
             in_channels=in_channels,
@@ -207,6 +201,7 @@ class DiffusionMAE1d(nn.Module):
         encoder_patch_size: int = 1,
         bottleneck: Union[Bottleneck, Sequence[Bottleneck]] = [],
         bottleneck_channels: Optional[int] = None,
+        unet_type: str = "base",
         **kwargs,
     ):
         super().__init__()
@@ -233,7 +228,8 @@ class DiffusionMAE1d(nn.Module):
             use_complex=False,  # Magnitude encoding
         )
 
-        self.unet = UNet1d(
+        self.unet = XUNet1d(
+            type=unet_type,
             in_channels=in_channels,
             context_channels=context_channels,
             use_stft=True,
@@ -546,9 +542,9 @@ class AudioDiffusionConditional(Model1d):
         self.embedding_mask_proba = embedding_mask_proba
         default_kwargs = dict(
             **get_default_model_kwargs(),
+            unet_type="cfg",
             context_embedding_features=embedding_features,
             context_embedding_max_length=embedding_max_length,
-            use_classifier_free_guidance=True,
         )
         super().__init__(**{**default_kwargs, **kwargs})
 
