@@ -207,12 +207,12 @@ class ResnetBlock1d(nn.Module):
         return h + self.to_out(x)
 
 
-class PatchBlock(nn.Module):
+class Patcher(nn.Module):
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        patch_size: int = 2,
+        patch_size: int,
         context_mapping_features: Optional[int] = None,
     ):
         super().__init__()
@@ -223,7 +223,7 @@ class PatchBlock(nn.Module):
         self.block = ResnetBlock1d(
             in_channels=in_channels,
             out_channels=out_channels // patch_size,
-            num_groups=min(patch_size, in_channels),
+            num_groups=1,
             context_mapping_features=context_mapping_features,
         )
 
@@ -233,12 +233,12 @@ class PatchBlock(nn.Module):
         return x
 
 
-class UnpatchBlock(nn.Module):
+class Unpatcher(nn.Module):
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        patch_size: int = 2,
+        patch_size: int,
         context_mapping_features: Optional[int] = None,
     ):
         super().__init__()
@@ -249,7 +249,7 @@ class UnpatchBlock(nn.Module):
         self.block = ResnetBlock1d(
             in_channels=in_channels // patch_size,
             out_channels=out_channels,
-            num_groups=min(patch_size, out_channels),
+            num_groups=1,
             context_mapping_features=context_mapping_features,
         )
 
@@ -257,56 +257,6 @@ class UnpatchBlock(nn.Module):
         x = rearrange(x, " b (c p) l -> b c (l p) ", p=self.patch_size)
         x = self.block(x, mapping)
         return x
-
-
-class Patcher(ConditionedSequential):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        blocks: int,
-        factor: int,
-        context_mapping_features: Optional[int] = None,
-    ):
-        channels_pre = [in_channels * (factor ** i) for i in range(blocks)]
-        channels_post = [in_channels * (factor ** (i + 1)) for i in range(blocks - 1)]
-        channels_post += [out_channels]
-
-        super().__init__(
-            PatchBlock(
-                in_channels=channels_pre[i],
-                out_channels=channels_post[i],
-                patch_size=factor,
-                context_mapping_features=context_mapping_features,
-            )
-            for i in range(blocks)
-        )
-
-
-class Unpatcher(ConditionedSequential):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        blocks: int,
-        factor: int,
-        context_mapping_features: Optional[int] = None,
-    ):
-        channels_pre = [in_channels]
-        channels_pre += [
-            out_channels * (factor ** (i + 1)) for i in reversed(range(blocks - 1))
-        ]
-        channels_post = [out_channels * (factor ** i) for i in reversed(range(blocks))]
-
-        super().__init__(
-            UnpatchBlock(
-                in_channels=channels_pre[i],
-                out_channels=channels_post[i],
-                patch_size=factor,
-                context_mapping_features=context_mapping_features,
-            )
-            for i in range(blocks)
-        )
 
 
 """
@@ -927,8 +877,7 @@ class UNet1d(nn.Module):
         factors: Sequence[int],
         num_blocks: Sequence[int],
         attentions: Sequence[int],
-        patch_blocks: int = 1,
-        patch_factor: int = 1,
+        patch_size: int = 1,
         resnet_groups: int = 8,
         use_context_time: bool = True,
         kernel_multiplier_downsample: int = 2,
@@ -1013,11 +962,12 @@ class UNet1d(nn.Module):
             assert exists(in_channels) and exists(out_channels)
             self.stft = STFT(**stft_kwargs)
 
+        assert not kwargs, f"Unknown arguments: {', '.join(list(kwargs.keys()))}"
+
         self.to_in = Patcher(
             in_channels=in_channels + context_channels[0],
             out_channels=channels * multipliers[0],
-            blocks=patch_blocks,
-            factor=patch_factor,
+            patch_size=patch_size,
             context_mapping_features=context_mapping_features,
         )
 
@@ -1076,8 +1026,7 @@ class UNet1d(nn.Module):
         self.to_out = Unpatcher(
             in_channels=channels * multipliers[0],
             out_channels=out_channels,
-            blocks=patch_blocks,
-            factor=patch_factor,
+            patch_size=patch_size,
             context_mapping_features=context_mapping_features,
         )
 

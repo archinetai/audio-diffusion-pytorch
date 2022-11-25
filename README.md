@@ -1,7 +1,7 @@
 <img src="./LOGO.png"></img>
 
 Unconditional audio generation using diffusion models, in PyTorch. The goal of this repository is to explore different architectures and diffusion models to generate audio (speech and music) directly from/to the waveform.
-Progress will be documented in the [experiments](#experiments) section. You can use the [`audio-diffusion-pytorch-trainer`](https://github.com/archinetai/audio-diffusion-pytorch-trainer) to run your own experiments – please share your findings in the [discussions](https://github.com/archinetai/audio-diffusion-pytorch/discussions) page!
+Progress will be documented in the [experiments](#experiments) section. You can use the [`audio-diffusion-pytorch-trainer`](https://github.com/archinetai/audio-diffusion-pytorch-trainer) to run your own experiments – please share your findings in the [discussions](https://github.com/archinetai/audio-diffusion-pytorch/discussions) page! Pretrained models can be found at [`archisound`](https://github.com/archinetai/archisound).
 
 ## Install
 
@@ -240,27 +240,6 @@ composer = SpanBySpanComposer(
 )
 y_long = composer(y, keep_start=True) # [1, 1, 98304]
 ```
-
-## Pretrained Models
-
-### Diffusion (Magnitude) AutoEncoder ([`dmae1d-ATC64-v1`](https://huggingface.co/archinetai/dmae1d-ATC64-v1/tree/main))
-```py
-from audio_diffusion_pytorch import AudioModel
-
-autoencoder = AudioModel.from_pretrained("dmae1d-ATC64-v1")
-
-x = torch.randn(1, 2, 2**18)
-z = autoencoder.encode(x) # [1, 32, 256]
-y = autoencoder.decode(z, num_steps=20) # [1, 2, 262144]
-```
-
-| Info  | |
-| ------------- | ------------- |
-| Input type | Audio (stereo @ 48kHz) |
-| Number of parameters  | 234.2M  |
-| Compression Factor | 64x |
-| Downsampling Factor | 1024x |
-| Bottleneck Type | Tanh |
 
 
 ## Experiments
