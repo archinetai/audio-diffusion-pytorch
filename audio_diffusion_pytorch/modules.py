@@ -8,7 +8,7 @@ from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many
 from torch import Tensor, einsum
 
-from .utils import closest_power_2, default, exists, groupby
+from .utils import closest_power_2, default, exists, groupby, is_sequence
 
 """
 Utils
@@ -909,9 +909,11 @@ class UNet1d(nn.Module):
         self.use_stft = use_stft
         self.use_stft_context = use_stft_context
 
+        self.context_features = context_features
         context_channels_pad_length = num_layers + 1 - len(context_channels)
         context_channels = context_channels + [0] * context_channels_pad_length
         self.context_channels = context_channels
+        self.context_embedding_features = context_embedding_features
 
         if use_context_channels:
             has_context = [c > 0 for c in context_channels]
@@ -1140,22 +1142,21 @@ def rand_bool(shape: Any, proba: float, device: Any = None) -> Tensor:
         return torch.bernoulli(torch.full(shape, proba, device=device)).to(torch.bool)
 
 
-class UNetConditional1d(UNet1d):
-    """
-    UNet1d with classifier-free guidance on the token embeddings
-    """
+class UNetCFG1d(UNet1d):
+
+    """UNet1d with Classifier-Free Guidance"""
 
     def __init__(
         self,
-        context_embedding_features: int,
         context_embedding_max_length: int,
+        context_embedding_features: int,
         **kwargs,
     ):
         super().__init__(
             context_embedding_features=context_embedding_features, **kwargs
         )
         self.fixed_embedding = FixedEmbedding(
-            context_embedding_max_length, context_embedding_features
+            max_length=context_embedding_max_length, features=context_embedding_features
         )
 
     def forward(  # type: ignore
@@ -1178,14 +1179,72 @@ class UNetConditional1d(UNet1d):
             )
             embedding = torch.where(batch_mask, fixed_embedding, embedding)
 
-        out = super().forward(x, time, embedding=embedding, **kwargs)
-
         if embedding_scale != 1.0:
-            # Scale conditional output using classifier-free guidance
+            # Compute both normal and fixed embedding outputs
+            out = super().forward(x, time, embedding=embedding, **kwargs)
             out_masked = super().forward(x, time, embedding=fixed_embedding, **kwargs)
-            out = out_masked + (out - out_masked) * embedding_scale
+            # Scale conditional output using classifier-free guidance
+            return out_masked + (out - out_masked) * embedding_scale
+        else:
+            return super().forward(x, time, embedding=embedding, **kwargs)
 
-        return out
+
+class UNetNCCA1d(UNet1d):
+
+    """UNet1d with Noise Channel Conditioning Augmentation"""
+
+    def __init__(self, context_features: int, **kwargs):
+        super().__init__(context_features=context_features, **kwargs)
+        self.embedder = NumberEmbedder(features=context_features)
+
+    def forward(  # type: ignore
+        self,
+        x: Tensor,
+        time: Tensor,
+        *,
+        channels_list: Sequence[Tensor],
+        channels_augmentation: bool = False,
+        channels_scale: Union[int, Sequence[int]] = 0,
+        **kwargs,
+    ) -> Tensor:
+        b, num_items = x.shape[0], len(channels_list)
+
+        if channels_augmentation:
+            # Random noise augmentation for each item
+            channels_scale = torch.rand(num_items, b).to(x)  # type: ignore
+            for i in range(num_items):
+                item = channels_list[i]
+                scale = rearrange(channels_scale[i], "b -> b 1 1")  # type: ignore
+                channels_list[i] = torch.randn_like(item) * scale + item * (1 - scale)  # type: ignore # noqa
+        else:
+            # Expand same scale to each batch element
+            if is_sequence(channels_scale):
+                assert_message = "len(channels_scale) must match len(channels_list)"
+                assert len(channels_scale) == num_items, assert_message
+            else:
+                channels_scale = num_items * [channels_scale]  # type: ignore
+            channels_scale = torch.tensor(channels_scale).to(x)  # type: ignore
+            channels_scale = repeat(channels_scale, "n -> n b", b=b)
+
+        # Compute scale feature embedding
+        scale_embedding = self.embedder(channels_scale)
+        scale_embedding = reduce(scale_embedding, "n b d -> b d", "sum")
+
+        return super().forward(
+            x=x,
+            time=time,
+            channels_list=channels_list,
+            features=scale_embedding,
+            **kwargs,
+        )
+
+
+class UNetAll1d(UNetCFG1d, UNetNCCA1d):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def forward(self, *args, **kwargs):  # type: ignore
+        return UNetCFG1d.forward(self, *args, **kwargs)
 
 
 class T5Embedder(nn.Module):

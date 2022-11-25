@@ -9,7 +9,7 @@ from torch import Tensor, nn
 from tqdm import tqdm
 
 from .diffusion import LinearSchedule, UniformDistribution, VSampler, XDiffusion
-from .modules import STFT, SinusoidalEmbedding, UNet1d, UNetConditional1d, rand_bool
+from .modules import STFT, SinusoidalEmbedding, UNet1d, UNetCFG1d, rand_bool
 from .utils import (
     closest_power_2,
     default,
@@ -34,7 +34,7 @@ class Model1d(nn.Module):
         super().__init__()
         diffusion_kwargs, kwargs = groupby("diffusion_", kwargs)
 
-        UNet = UNetConditional1d if use_classifier_free_guidance else UNet1d
+        UNet = UNetCFG1d if use_classifier_free_guidance else UNet1d
         self.unet = UNet(**kwargs)
 
         self.diffusion = XDiffusion(
