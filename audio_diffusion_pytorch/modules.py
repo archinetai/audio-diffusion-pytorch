@@ -8,7 +8,7 @@ from einops.layers.torch import Rearrange
 from einops_exts import rearrange_many
 from torch import Tensor, einsum
 
-from .utils import closest_power_2, default, exists, groupby, is_sequence
+from .utils import closest_power_2, default, exists, groupby
 
 """
 Utils
@@ -1197,44 +1197,44 @@ class UNetNCCA1d(UNet1d):
         super().__init__(context_features=context_features, **kwargs)
         self.embedder = NumberEmbedder(features=context_features)
 
+    def expand(self, x: Any, shape: Tuple[int, ...]) -> Tensor:
+        x = x if torch.is_tensor(x) else torch.tensor(x)
+        return x.expand(shape)
+
     def forward(  # type: ignore
         self,
         x: Tensor,
         time: Tensor,
         *,
         channels_list: Sequence[Tensor],
-        channels_augmentation: bool = False,
-        channels_scale: Union[int, Sequence[int]] = 0,
+        channels_augmentation: Union[
+            bool, Sequence[bool], Sequence[Sequence[bool]], Tensor
+        ] = False,
+        channels_scale: Union[
+            float, Sequence[float], Sequence[Sequence[float]], Tensor
+        ] = 0,
         **kwargs,
     ) -> Tensor:
-        b, num_items = x.shape[0], len(channels_list)
+        b, n = x.shape[0], len(channels_list)
+        channels_augmentation = self.expand(channels_augmentation, shape=(b, n)).to(x)
+        channels_scale = self.expand(channels_scale, shape=(b, n)).to(x)
 
-        if channels_augmentation:
-            # Random noise augmentation for each item
-            channels_scale = torch.rand(num_items, b).to(x)  # type: ignore
-            for i in range(num_items):
-                item = channels_list[i]
-                scale = rearrange(channels_scale[i], "b -> b 1 1")  # type: ignore
-                channels_list[i] = torch.randn_like(item) * scale + item * (1 - scale)  # type: ignore # noqa
-        else:
-            # Expand same scale to each batch element
-            if is_sequence(channels_scale):
-                assert_message = "len(channels_scale) must match len(channels_list)"
-                assert len(channels_scale) == num_items, assert_message
-            else:
-                channels_scale = num_items * [channels_scale]  # type: ignore
-            channels_scale = torch.tensor(channels_scale).to(x)  # type: ignore
-            channels_scale = repeat(channels_scale, "n -> n b", b=b)
+        # Augmentation (for each channel list item)
+        for i in range(n):
+            scale = channels_scale[:, i] * channels_augmentation[:, i]
+            scale = rearrange(scale, "b -> b 1 1")
+            item = channels_list[i]
+            channels_list[i] = torch.randn_like(item) * scale + item * (1 - scale)  # type: ignore # noqa
 
-        # Compute scale feature embedding
-        scale_embedding = self.embedder(channels_scale)
-        scale_embedding = reduce(scale_embedding, "n b d -> b d", "sum")
+        # Scale embedding (sum reduction if more than one channel list item)
+        channels_scale_emb = self.embedder(channels_scale)
+        channels_scale_emb = reduce(channels_scale_emb, "b n d -> b d", "sum")
 
         return super().forward(
             x=x,
             time=time,
             channels_list=channels_list,
-            features=scale_embedding,
+            features=channels_scale_emb,
             **kwargs,
         )
 

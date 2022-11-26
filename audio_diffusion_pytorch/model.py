@@ -3,7 +3,7 @@ from random import randint
 from typing import Any, Optional, Sequence, Tuple, Union
 
 import torch
-from audio_encoders_pytorch import Bottleneck, Encoder1d
+from audio_encoders_pytorch import Encoder1d
 from einops import rearrange
 from torch import Tensor, nn
 from tqdm import tqdm
@@ -16,8 +16,6 @@ from .utils import (
     downsample,
     exists,
     groupby,
-    prefix_dict,
-    prod,
     to_list,
     upsample,
 )
@@ -104,194 +102,40 @@ class DiffusionUpsampler1d(Model1d):
         return super().sample(noise, **{**default_kwargs, **kwargs})  # type: ignore
 
 
-class DiffusionAutoencoder1d(nn.Module):
+class DiffusionAE1d(Model1d):
+    """Diffusion Auto Encoder"""
+
     def __init__(
-        self,
-        in_channels: int,
-        encoder_inject_depth: int,
-        encoder_channels: int,
-        encoder_factors: Sequence[int],
-        encoder_multipliers: Sequence[int],
-        encoder_patch_size: int = 1,
-        bottleneck: Union[Bottleneck, Sequence[Bottleneck]] = [],
-        bottleneck_channels: Optional[int] = None,
-        unet_type: str = "base",
-        **kwargs,
+        self, in_channels: int, encoder: Encoder1d, encoder_inject_depth: int, **kwargs
     ):
-        super().__init__()
-        self.in_channels = in_channels
-
-        encoder_kwargs, kwargs = groupby("encoder_", kwargs)
-        diffusion_kwargs, kwargs = groupby("diffusion_", kwargs)
-
-        # Compute context channels
-        context_channels = [0] * encoder_inject_depth
-        if exists(bottleneck_channels):
-            context_channels += [bottleneck_channels]
-        else:
-            context_channels += [encoder_channels * encoder_multipliers[-1]]
-
-        self.unet = XUNet1d(
-            type=unet_type,
+        super().__init__(
             in_channels=in_channels,
-            context_channels=context_channels,
+            context_channels=[0] * encoder_inject_depth + [encoder.out_channels],
             **kwargs,
         )
-
-        self.diffusion = XDiffusion(net=self.unet, **diffusion_kwargs)
-
-        self.encoder = Encoder1d(
-            in_channels=in_channels,
-            channels=encoder_channels,
-            patch_size=encoder_patch_size,
-            factors=encoder_factors,
-            multipliers=encoder_multipliers,
-            out_channels=bottleneck_channels,
-            **encoder_kwargs,
-        )
-
-        self.encoder_downsample_factor = encoder_patch_size * prod(encoder_factors)
-        self.bottleneck_channels = bottleneck_channels
-        self.bottlenecks = nn.ModuleList(to_list(bottleneck))
-
-    def encode(
-        self, x: Tensor, with_info: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Any]]:
-        latent, info = self.encoder(x, with_info=True)
-        # Apply bottlenecks if present
-        for bottleneck in self.bottlenecks:
-            latent, info_bottleneck = bottleneck(latent, with_info=True)
-            info = {**info, **prefix_dict("bottleneck_", info_bottleneck)}
-        return (latent, info) if with_info else latent
+        self.in_channels = in_channels
+        self.encoder = encoder
 
     def forward(  # type: ignore
         self, x: Tensor, with_info: bool = False, **kwargs
     ) -> Union[Tensor, Tuple[Tensor, Any]]:
         latent, info = self.encode(x, with_info=True)
-        loss = self.diffusion(x, channels_list=[latent], **kwargs)
+        print(latent.shape)
+        loss = super().forward(x, channels_list=[latent], **kwargs)
         return (loss, info) if with_info else loss
+
+    def encode(self, *args, **kwargs):
+        return self.encoder(*args, **kwargs)
 
     def decode(self, latent: Tensor, **kwargs) -> Tensor:
         b = latent.shape[0]
-        length = latent.shape[2] * self.encoder_downsample_factor
+        length = closest_power_2(latent.shape[2] * self.encoder.downsample_factor)
         # Compute noise by inferring shape from latent length
         noise = torch.randn(b, self.in_channels, length, device=latent.device)
         # Compute context form latent
         default_kwargs = dict(channels_list=[latent])
         # Decode by sampling while conditioning on latent channels
-        return self.sample(noise, **{**default_kwargs, **kwargs})
-
-    def sample(self, *args, **kwargs) -> Tensor:
-        return self.diffusion.sample(*args, **kwargs)
-
-
-class DiffusionMAE1d(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        encoder_inject_depth: int,
-        encoder_channels: int,
-        encoder_factors: Sequence[int],
-        encoder_multipliers: Sequence[int],
-        diffusion_type: str,
-        stft_num_fft: int,
-        stft_hop_length: int,
-        stft_use_complex: bool,
-        stft_window_length: Optional[int] = None,
-        encoder_patch_size: int = 1,
-        bottleneck: Union[Bottleneck, Sequence[Bottleneck]] = [],
-        bottleneck_channels: Optional[int] = None,
-        unet_type: str = "base",
-        **kwargs,
-    ):
-        super().__init__()
-        self.in_channels = in_channels
-
-        encoder_kwargs, kwargs = groupby("encoder_", kwargs)
-        diffusion_kwargs, kwargs = groupby("diffusion_", kwargs)
-        stft_kwargs, kwargs = groupby("stft_", kwargs)
-
-        # Compute context channels
-        context_channels = [0] * encoder_inject_depth
-        if exists(bottleneck_channels):
-            context_channels += [bottleneck_channels]
-        else:
-            context_channels += [encoder_channels * encoder_multipliers[-1]]
-
-        self.spectrogram_channels = stft_num_fft // 2 + 1
-        self.stft_hop_length = stft_hop_length
-
-        self.encoder_stft = STFT(
-            num_fft=stft_num_fft,
-            hop_length=stft_hop_length,
-            window_length=stft_window_length,
-            use_complex=False,  # Magnitude encoding
-        )
-
-        self.unet = XUNet1d(
-            type=unet_type,
-            in_channels=in_channels,
-            context_channels=context_channels,
-            use_stft=True,
-            stft_use_complex=stft_use_complex,
-            stft_num_fft=stft_num_fft,
-            stft_hop_length=stft_hop_length,
-            stft_window_length=stft_window_length,
-            **kwargs,
-        )
-
-        self.diffusion = XDiffusion(
-            type=diffusion_type, net=self.unet, **diffusion_kwargs
-        )
-
-        self.encoder = Encoder1d(
-            in_channels=in_channels * self.spectrogram_channels,
-            channels=encoder_channels,
-            patch_size=encoder_patch_size,
-            factors=encoder_factors,
-            multipliers=encoder_multipliers,
-            out_channels=bottleneck_channels,
-            **encoder_kwargs,
-        )
-
-        self.encoder_downsample_factor = encoder_patch_size * prod(encoder_factors)
-        self.bottleneck_channels = bottleneck_channels
-        self.bottlenecks = nn.ModuleList(to_list(bottleneck))
-
-    def encode(
-        self, x: Tensor, with_info: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Any]]:
-        # Extract magnitude and encode
-        magnitude, _ = self.encoder_stft.encode(x)
-        magnitude_flat = rearrange(magnitude, "b c f t -> b (c f) t")
-        latent, info = self.encoder(magnitude_flat, with_info=True)
-        # Apply bottlenecks if present
-        for bottleneck in self.bottlenecks:
-            latent, info_bottleneck = bottleneck(latent, with_info=True)
-            info = {**info, **prefix_dict("bottleneck_", info_bottleneck)}
-        return (latent, info) if with_info else latent
-
-    def forward(  # type: ignore
-        self, x: Tensor, with_info: bool = False, **kwargs
-    ) -> Union[Tensor, Tuple[Tensor, Any]]:
-        latent, info = self.encode(x, with_info=True)
-        loss = self.diffusion(x, channels_list=[latent], **kwargs)
-        return (loss, info) if with_info else loss
-
-    def decode(self, latent: Tensor, **kwargs) -> Tensor:
-        b = latent.shape[0]
-        length = closest_power_2(
-            self.stft_hop_length * latent.shape[2] * self.encoder_downsample_factor
-        )
-        # Compute noise by inferring shape from latent length
-        noise = torch.randn(b, self.in_channels, length, device=latent.device)
-        # Compute context form latent
-        default_kwargs = dict(channels_list=[latent])
-        # Decode by sampling while conditioning on latent channels
-        return self.sample(noise, **{**default_kwargs, **kwargs})  # type: ignore
-
-    def sample(self, *args, **kwargs) -> Tensor:
-        return self.diffusion.sample(*args, **kwargs)
+        return super().sample(noise, **{**default_kwargs, **kwargs})
 
 
 class DiffusionVocoder1d(Model1d):
@@ -499,31 +343,21 @@ class AudioDiffusionUpsampler(DiffusionUpsampler1d):
         return super().sample(*args, **{**get_default_sampling_kwargs(), **kwargs})
 
 
-class AudioDiffusionAutoencoder(DiffusionAutoencoder1d):
-    def __init__(self, *args, **kwargs):
+class AudioDiffusionAE(DiffusionAE1d):
+    def __init__(self, in_channels: int, *args, **kwargs):
         default_kwargs = dict(
             **get_default_model_kwargs(),
+            in_channels=in_channels,
+            encoder=Encoder1d(
+                in_channels=in_channels,
+                patch_size=16,
+                channels=16,
+                multipliers=[1, 2, 4, 4, 4, 4, 4],
+                factors=[4, 4, 4, 2, 2, 2],
+                num_blocks=[2, 2, 2, 2, 2, 2],
+                out_channels=64,
+            ),
             encoder_inject_depth=6,
-            encoder_channels=16,
-            encoder_patch_size=16,
-            encoder_multipliers=[1, 2, 4, 4, 4, 4, 4],
-            encoder_factors=[4, 4, 4, 2, 2, 2],
-            encoder_num_blocks=[2, 2, 2, 2, 2, 2],
-            bottleneck_channels=64,
-        )
-        super().__init__(*args, **{**default_kwargs, **kwargs})  # type: ignore
-
-    def decode(self, *args, **kwargs):
-        return super().decode(*args, **{**get_default_sampling_kwargs(), **kwargs})
-
-
-class AudioDiffusionMAE(DiffusionMAE1d):
-    def __init__(self, *args, **kwargs):
-        default_kwargs = dict(
-            diffusion_type="v",
-            diffusion_sigma_distribution=UniformDistribution(),
-            stft_num_fft=1023,
-            stft_hop_length=256,
         )
         super().__init__(*args, **{**default_kwargs, **kwargs})  # type: ignore
 

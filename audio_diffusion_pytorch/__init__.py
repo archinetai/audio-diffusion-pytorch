@@ -1,3 +1,5 @@
+from audio_encoders_pytorch import Encoder1d, ME1d
+
 from .diffusion import (
     ADPM2Sampler,
     AEulerSampler,
@@ -21,15 +23,14 @@ from .diffusion import (
     XDiffusion,
 )
 from .model import (
-    AudioDiffusionAutoencoder,
+    AudioDiffusionAE,
     AudioDiffusionConditional,
     AudioDiffusionModel,
     AudioDiffusionUpphaser,
     AudioDiffusionUpsampler,
     AudioDiffusionVocoder,
+    DiffusionAE1d,
     DiffusionAR1d,
-    DiffusionAutoencoder1d,
-    DiffusionMAE1d,
     DiffusionUpphaser1d,
     DiffusionUpsampler1d,
     DiffusionVocoder1d,

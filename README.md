@@ -62,9 +62,9 @@ upsampled = upsampler.sample(
 
 ### Autoencoding
 ```py
-from audio_diffusion_pytorch import AudioDiffusionAutoencoder
+from audio_diffusion_pytorch import AudioDiffusionAE
 
-autoencoder = AudioDiffusionAutoencoder(in_channels=1)
+autoencoder = AudioDiffusionAE(in_channels=1)
 
 # Train on audio samples
 x = torch.randn(2, 1, 2 ** 18)
