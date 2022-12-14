@@ -120,7 +120,6 @@ class DiffusionAE1d(Model1d):
         self, x: Tensor, with_info: bool = False, **kwargs
     ) -> Union[Tensor, Tuple[Tensor, Any]]:
         latent, info = self.encode(x, with_info=True)
-        print(latent.shape)
         loss = super().forward(x, channels_list=[latent], **kwargs)
         return (loss, info) if with_info else loss
 
