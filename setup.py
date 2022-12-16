@@ -18,6 +18,7 @@ setup(
         "einops>=0.4",
         "einops-exts>=0.0.3",
         "audio-encoders-pytorch",
+        "xformers @ git+https://github.com/facebookresearch/xformers.git@main#egg=xformers"
     ],
     classifiers=[
         "Development Status :: 4 - Beta",

@@ -1,3 +1,4 @@
+import os
 from math import floor, log, pi
 from typing import Any, List, Optional, Sequence, Tuple, Union
 
@@ -6,6 +7,9 @@ import torch.nn as nn
 from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange
 from torch import Tensor, einsum
+import xformers
+import xformers.ops
+from typing import Any, Optional
 
 from .utils import closest_power_2, default, exists, groupby
 
@@ -409,13 +413,59 @@ class Attention(nn.Module):
         q, k, v = (self.to_q(x), *torch.chunk(self.to_kv(context), chunks=2, dim=-1))
         # Compute and return attention
         return self.attention(q, k, v)
+        
+# Source: https://www.photoroom.com/tech/stable-diffusion-100-percent-faster-with-memory-efficient-attention/
+class MemoryEfficientCrossAttention(nn.Module):
+     def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.0):
+         super().__init__()
+         inner_dim = dim_head * heads
+         context_dim = default(context_dim, query_dim)
 
+         self.heads = heads
+         self.dim_head = dim_head
+
+         self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
+         self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
+         self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
+
+         self.to_out = nn.Sequential(nn.Linear(inner_dim, query_dim), nn.Dropout(dropout))
+         self.attention_op: Optional[Any] = None
+
+     def forward(self, x, context=None, mask=None):
+         q = self.to_q(x)
+         context = default(context, x)
+         k = self.to_k(context)
+         v = self.to_v(context)
+
+         b, _, _ = q.shape
+         q, k, v = map(
+             lambda t: t.unsqueeze(3)
+             .reshape(b, t.shape[1], self.heads, self.dim_head)
+             .permute(0, 2, 1, 3)
+             .reshape(b * self.heads, t.shape[1], self.dim_head)
+             .contiguous(),
+             (q, k, v),
+         )
+
+         # actually compute the attention, what we cannot get enough of
+         out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None, op=self.attention_op)
+
+         # TODO: Use this directly in the attention operation, as a bias
+         if exists(mask):
+             raise NotImplementedError
+         out = (
+             out.unsqueeze(0)
+             .reshape(b, self.heads, out.shape[1], self.dim_head)
+             .permute(0, 2, 1, 3)
+             .reshape(b, out.shape[1], self.heads * self.dim_head)
+         )
+         return self.to_out(out)
 
 """
 Transformer Blocks
 """
 
-
+_USE_MEMORY_EFFICIENT_ATTENTION = int(os.environ.get("USE_MEMORY_EFFICIENT_ATTENTION", 0)) == 1
 class TransformerBlock(nn.Module):
     def __init__(
         self,
@@ -439,6 +489,10 @@ class TransformerBlock(nn.Module):
             use_rel_pos=use_rel_pos,
             rel_pos_num_buckets=rel_pos_num_buckets,
             rel_pos_max_distance=rel_pos_max_distance,
+        ) if use_rel_pos else MemoryEfficientCrossAttention(
+            query_dim=features,
+            heads=num_heads,
+            dim_head=head_features,
         )
 
         if self.use_cross_attention:
@@ -450,6 +504,11 @@ class TransformerBlock(nn.Module):
                 use_rel_pos=use_rel_pos,
                 rel_pos_num_buckets=rel_pos_num_buckets,
                 rel_pos_max_distance=rel_pos_max_distance,
+            ) if use_rel_pos else MemoryEfficientCrossAttention(
+                query_dim=features,
+                heads=num_heads,
+                dim_head=head_features,
+                context_dim=context_features
             )
 
         self.feed_forward = FeedForward(features=features, multiplier=multiplier)
