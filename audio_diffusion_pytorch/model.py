@@ -131,7 +131,7 @@ class DiffusionAE1d(Model1d):
         length = closest_power_2(latent.shape[2] * self.encoder.downsample_factor)
         # Compute noise by inferring shape from latent length
         noise = torch.randn(b, self.in_channels, length, device=latent.device)
-        # Compute context form latent
+        # Compute context from latent
         default_kwargs = dict(channels_list=[latent])
         # Decode by sampling while conditioning on latent channels
         return super().sample(noise, **{**default_kwargs, **kwargs})
@@ -351,7 +351,7 @@ class AudioDiffusionAE(DiffusionAE1d):
                 in_channels=in_channels,
                 patch_size=16,
                 channels=16,
-                multipliers=[1, 2, 4, 4, 4, 4, 4],
+                multipliers=[2, 2, 4, 4, 4, 4, 4],
                 factors=[4, 4, 4, 2, 2, 2],
                 num_blocks=[2, 2, 2, 2, 2, 2],
                 out_channels=64,
