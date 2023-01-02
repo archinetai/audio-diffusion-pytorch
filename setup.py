@@ -18,6 +18,7 @@ setup(
         "einops>=0.4",
         "einops-exts>=0.0.3",
         "audio-encoders-pytorch",
+        "a-unet",
     ],
     classifiers=[
         "Development Status :: 4 - Beta",
