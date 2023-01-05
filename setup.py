@@ -3,7 +3,7 @@ from setuptools import find_packages, setup
 setup(
     name="audio-diffusion-pytorch",
     packages=find_packages(exclude=[]),
-    version="0.0.1+nightly",
+    version="0.0.2+nightly",
     license="MIT",
     description="Audio Diffusion - PyTorch",
     long_description_content_type="text/markdown",

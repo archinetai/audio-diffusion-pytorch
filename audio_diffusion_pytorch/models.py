@@ -4,7 +4,7 @@ import torch
 from audio_encoders_pytorch import Encoder1d
 from torch import Tensor, nn
 
-from .diffusion import VDiffusion, VSampler
+from .diffusion import ARVDiffusion, ARVSampler, VDiffusion, VSampler
 from .unets import UNetV0
 from .utils import closest_power_2, groupby
 
@@ -15,7 +15,7 @@ class DiffusionModel(nn.Module):
         net_t: Callable = UNetV0,
         diffusion_t: Callable = VDiffusion,
         sampler_t: Callable = VSampler,
-        **kwargs
+        **kwargs,
     ):
         super().__init__()
         diffusion_kwargs, kwargs = groupby("diffusion_", kwargs)
@@ -41,7 +41,7 @@ class DiffusionAE(DiffusionModel):
         channels: Sequence[int],
         encoder: Encoder1d,
         inject_depth: int,
-        **kwargs
+        **kwargs,
     ):
         context_channels = [0] * len(channels)
         context_channels[inject_depth] = encoder.out_channels
@@ -76,3 +76,29 @@ class DiffusionAE(DiffusionModel):
         default_kwargs = dict(channels=channels)
         # Decode by sampling while conditioning on latent channels
         return super().sample(noise, **{**default_kwargs, **kwargs})
+
+
+class DiffusionAR(DiffusionModel):
+    def __init__(
+        self,
+        in_channels: int,
+        length: int,
+        num_splits: int,
+        diffusion_t: Callable = ARVDiffusion,
+        sampler_t: Callable = ARVSampler,
+        **kwargs,
+    ):
+        super().__init__(
+            in_channels=in_channels + 1,
+            out_channels=in_channels,
+            diffusion_t=diffusion_t,
+            diffusion_length=length,
+            diffusion_num_splits=num_splits,
+            sampler_t=sampler_t,
+            sampler_in_channels=in_channels,
+            sampler_length=length,
+            sampler_num_splits=num_splits,
+            use_time_conditioning=False,
+            use_modulation=False,
+            **kwargs,
+        )
