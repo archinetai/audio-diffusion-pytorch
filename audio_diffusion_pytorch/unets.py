@@ -1,5 +1,6 @@
 from typing import Callable, Optional, Sequence
 
+import torch
 from a_unet import (
     ClassifierFreeGuidancePlugin,
     Conv,
@@ -151,5 +152,26 @@ def LTPlugin(
             return x
 
         return Module([encode, decode, net], forward)
+
+    return Net
+
+
+def AppendChannelsPlugin(
+    net_t: Callable,
+    channels: int,
+):
+    def Net(
+        in_channels: int, out_channels: Optional[int] = None, **kwargs
+    ) -> nn.Module:
+        out_channels = default(out_channels, in_channels)
+        net = net_t(  # type: ignore
+            in_channels=in_channels + channels, out_channels=out_channels, **kwargs
+        )
+
+        def forward(x: Tensor, *args, append_channels: Tensor, **kwargs):
+            x = torch.cat([x, append_channels], dim=1)
+            return net(x, *args, **kwargs)
+
+        return Module([net], forward)
 
     return Net

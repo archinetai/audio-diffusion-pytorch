@@ -10,5 +10,5 @@ from .diffusion import (
     VDiffusion,
     VSampler,
 )
-from .models import DiffusionAE, DiffusionModel
-from .unets import XUNet
+from .models import DiffusionAE, DiffusionAR, DiffusionModel, DiffusionUpsampler
+from .unets import LTPlugin, UNetV0, XUNet

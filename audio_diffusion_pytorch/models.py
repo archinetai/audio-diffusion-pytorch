@@ -5,8 +5,8 @@ from audio_encoders_pytorch import Encoder1d
 from torch import Tensor, nn
 
 from .diffusion import ARVDiffusion, ARVSampler, VDiffusion, VSampler
-from .unets import UNetV0
-from .utils import closest_power_2, groupby
+from .unets import AppendChannelsPlugin, UNetV0
+from .utils import closest_power_2, downsample, groupby, upsample
 
 
 class DiffusionModel(nn.Module):
@@ -76,6 +76,37 @@ class DiffusionAE(DiffusionModel):
         default_kwargs = dict(channels=channels)
         # Decode by sampling while conditioning on latent channels
         return super().sample(noise, **{**default_kwargs, **kwargs})
+
+
+class DiffusionUpsampler(DiffusionModel):
+    def __init__(
+        self,
+        in_channels: int,
+        upsample_factor: int,
+        net_t: Callable = UNetV0,
+        **kwargs,
+    ):
+        self.upsample_factor = upsample_factor
+        super().__init__(
+            net_t=AppendChannelsPlugin(net_t, channels=in_channels),
+            in_channels=in_channels,
+            **kwargs,
+        )
+
+    def reupsample(self, x: Tensor) -> Tensor:
+        x = x.clone()
+        x = downsample(x, factor=self.upsample_factor)
+        x = upsample(x, factor=self.upsample_factor)
+        return x
+
+    def forward(self, x: Tensor, *args, **kwargs) -> Tensor:  # type: ignore
+        reupsampled = self.reupsample(x)
+        return super().forward(x, *args, append_channels=reupsampled, **kwargs)
+
+    def sample(self, downsampled: Tensor, *args, **kwargs) -> Tensor:  # type: ignore
+        reupsampled = upsample(downsampled, factor=self.upsample_factor)
+        noise = torch.randn_like(reupsampled)
+        return super().sample(noise, *args, append_channels=reupsampled, **kwargs)
 
 
 class DiffusionAR(DiffusionModel):
