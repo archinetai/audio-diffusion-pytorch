@@ -6,7 +6,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar, Uni
 import torch
 import torch.nn.functional as F
 from einops import rearrange
-from torch import Tensor
+from torch import Generator, Tensor
 from typing_extensions import TypeGuard
 
 T = TypeVar("T")
@@ -115,3 +115,11 @@ def downsample(waveforms: Tensor, factor: int, **kwargs) -> Tensor:
 
 def upsample(waveforms: Tensor, factor: int, **kwargs) -> Tensor:
     return resample(waveforms, factor_in=1, factor_out=factor, **kwargs)
+
+
+""" Torch Utils """
+
+
+def randn_like(tensor: Tensor, *args, generator: Optional[Generator] = None, **kwargs):
+    """randn_like that supports generator"""
+    return torch.randn(tensor.shape, *args, generator=generator, **kwargs).to(tensor)

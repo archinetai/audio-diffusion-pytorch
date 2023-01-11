@@ -1,17 +1,18 @@
-from typing import Any, Callable, Sequence, Tuple, Union
+from typing import Any, Callable, Optional, Sequence, Tuple, Union
 
 import torch
 from audio_encoders_pytorch import Encoder1d
-from torch import Tensor, nn
+from torch import Generator, Tensor, nn
 
+from .components import AppendChannelsPlugin, UNetV0
 from .diffusion import ARVDiffusion, ARVSampler, VDiffusion, VSampler
-from .unets import AppendChannelsPlugin, UNetV0
-from .utils import closest_power_2, downsample, groupby, upsample
+from .utils import closest_power_2, downsample, groupby, randn_like, upsample
 
 
 class DiffusionModel(nn.Module):
     def __init__(
         self,
+        dim: int = 1,
         net_t: Callable = UNetV0,
         diffusion_t: Callable = VDiffusion,
         sampler_t: Callable = VSampler,
@@ -21,7 +22,7 @@ class DiffusionModel(nn.Module):
         diffusion_kwargs, kwargs = groupby("diffusion_", kwargs)
         sampler_kwargs, kwargs = groupby("sampler_", kwargs)
 
-        self.net = net_t(**kwargs)
+        self.net = net_t(dim=dim, **kwargs)
         self.diffusion = diffusion_t(net=self.net, **diffusion_kwargs)
         self.sampler = sampler_t(net=self.net, **sampler_kwargs)
 
@@ -66,11 +67,18 @@ class DiffusionAE(DiffusionModel):
     def encode(self, *args, **kwargs):
         return self.encoder(*args, **kwargs)
 
-    def decode(self, latent: Tensor, **kwargs) -> Tensor:
+    def decode(
+        self, latent: Tensor, generator: Optional[Generator] = None, **kwargs
+    ) -> Tensor:
         b = latent.shape[0]
         length = closest_power_2(latent.shape[2] * self.encoder.downsample_factor)
         # Compute noise by inferring shape from latent length
-        noise = torch.randn(b, self.in_channels, length, device=latent.device)
+        noise = torch.randn(
+            (b, self.in_channels, length),
+            device=latent.device,
+            dtype=latent.dtype,
+            generator=generator,
+        )
         # Compute context from latent
         channels = [None] * self.inject_depth + [latent]  # type: ignore
         default_kwargs = dict(channels=channels)
@@ -103,10 +111,12 @@ class DiffusionUpsampler(DiffusionModel):
         reupsampled = self.reupsample(x)
         return super().forward(x, *args, append_channels=reupsampled, **kwargs)
 
-    def sample(self, downsampled: Tensor, *args, **kwargs) -> Tensor:  # type: ignore
+    def sample(  # type: ignore
+        self, downsampled: Tensor, generator: Optional[Generator] = None, **kwargs
+    ) -> Tensor:
         reupsampled = upsample(downsampled, factor=self.upsample_factor)
-        noise = torch.randn_like(reupsampled)
-        return super().sample(noise, *args, append_channels=reupsampled, **kwargs)
+        noise = randn_like(reupsampled, generator=generator)
+        return super().sample(noise, append_channels=reupsampled, **kwargs)
 
 
 class DiffusionAR(DiffusionModel):

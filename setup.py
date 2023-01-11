@@ -3,7 +3,7 @@ from setuptools import find_packages, setup
 setup(
     name="audio-diffusion-pytorch",
     packages=find_packages(exclude=[]),
-    version="0.0.3+nightly",
+    version="0.0.4+nightly",
     license="MIT",
     description="Audio Diffusion - PyTorch",
     long_description_content_type="text/markdown",
@@ -14,8 +14,9 @@ setup(
     install_requires=[
         "tqdm",
         "torch>=1.6",
+        "torchaudio",
         "data-science-types>=0.2",
-        "einops>=0.4",
+        "einops>=0.6",
         "einops-exts>=0.0.3",
         "audio-encoders-pytorch",
         "a-unet",
