@@ -76,7 +76,7 @@ sample = model.sample(
 ```
 
 ### Diffusion Upsampler
-Upsample audio from a lower sample rate to higher sample rate using diffusion, e.g. 3kHz to 48kHz:
+Upsample audio from a lower sample rate to higher sample rate using diffusion, e.g. 3kHz to 48kHz.
 ```py
 from audio_diffusion_pytorch import DiffusionUpsampler, UNetV0, VDiffusion, VSampler
 
@@ -102,7 +102,7 @@ sample = upsampler.sample(downsampled_audio, num_steps=10) # Output has shape: [
 ```
 
 ### Diffusion Vocoder
-Convert a mel-spectrogram to wavefrom using diffusion:
+Convert a mel-spectrogram to wavefrom using diffusion.
 ```py
 from audio_diffusion_pytorch import DiffusionVocoder, UNetV0, VDiffusion, VSampler
 

@@ -17,7 +17,6 @@ setup(
         "torchaudio",
         "data-science-types>=0.2",
         "einops>=0.6",
-        "einops-exts>=0.0.3",
         "a-unet",
     ],
     classifiers=[
