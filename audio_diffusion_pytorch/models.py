@@ -2,11 +2,10 @@ from math import floor
 from typing import Any, Callable, Optional, Sequence, Tuple, Union
 
 import torch
-from audio_encoders_pytorch import Encoder1d
 from einops import pack, rearrange, unpack
 from torch import Generator, Tensor, nn
 
-from .components import AppendChannelsPlugin, MelSpectrogram, UNetV0
+from .components import AppendChannelsPlugin, MelSpectrogram
 from .diffusion import ARVDiffusion, ARVSampler, VDiffusion, VSampler
 from .utils import closest_power_2, default, downsample, groupby, randn_like, upsample
 
@@ -14,10 +13,10 @@ from .utils import closest_power_2, default, downsample, groupby, randn_like, up
 class DiffusionModel(nn.Module):
     def __init__(
         self,
-        dim: int = 1,
-        net_t: Callable = UNetV0,
+        net_t: Callable,
         diffusion_t: Callable = VDiffusion,
         sampler_t: Callable = VSampler,
+        dim: int = 1,
         **kwargs,
     ):
         super().__init__()
@@ -43,12 +42,12 @@ class DiffusionAE(DiffusionModel):
         self,
         in_channels: int,
         channels: Sequence[int],
-        encoder: Encoder1d,
+        encoder: nn.Module,
         inject_depth: int,
         **kwargs,
     ):
         context_channels = [0] * len(channels)
-        context_channels[inject_depth] = encoder.out_channels
+        context_channels[inject_depth] = encoder.out_channels  # type: ignore
         super().__init__(
             in_channels=in_channels,
             channels=channels,
@@ -75,7 +74,7 @@ class DiffusionAE(DiffusionModel):
         self, latent: Tensor, generator: Optional[Generator] = None, **kwargs
     ) -> Tensor:
         b = latent.shape[0]
-        length = closest_power_2(latent.shape[2] * self.encoder.downsample_factor)
+        length = closest_power_2(latent.shape[2] * self.encoder.downsample_factor)  # type: ignore # noqa
         # Compute noise by inferring shape from latent length
         noise = torch.randn(
             (b, self.in_channels, length),
@@ -85,9 +84,8 @@ class DiffusionAE(DiffusionModel):
         )
         # Compute context from latent
         channels = [None] * self.inject_depth + [latent]  # type: ignore
-        default_kwargs = dict(channels=channels)
         # Decode by sampling while conditioning on latent channels
-        return super().sample(noise, **{**default_kwargs, **kwargs})
+        return super().sample(noise, channels=channels, **kwargs)
 
 
 class DiffusionUpsampler(DiffusionModel):
@@ -95,7 +93,7 @@ class DiffusionUpsampler(DiffusionModel):
         self,
         in_channels: int,
         upsample_factor: int,
-        net_t: Callable = UNetV0,
+        net_t: Callable,
         **kwargs,
     ):
         self.upsample_factor = upsample_factor
@@ -127,12 +125,12 @@ class DiffusionUpsampler(DiffusionModel):
 class DiffusionVocoder(DiffusionModel):
     def __init__(
         self,
+        net_t: Callable,
         mel_channels: int,
         mel_n_fft: int,
         mel_hop_length: Optional[int] = None,
         mel_win_length: Optional[int] = None,
         in_channels: int = 1,  # Ignored: channels are automatically batched.
-        net_t: Callable = UNetV0,
         **kwargs,
     ):
         mel_hop_length = default(mel_hop_length, floor(mel_n_fft) // 4)

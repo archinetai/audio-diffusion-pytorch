@@ -1,6 +1,6 @@
 <img src="./LOGO.png"></img>
 
-A fully featured audio diffusion library, for PyTorch. Includes models for unconditional audio generation, text-conditional audio generation, diffusion autoencoding, upsampling, and vocoding. The provided models work on waveforms, however, the U-Net (built using [`a-unet`](https://github.com/archinetai/a-unet)), `DiffusionModel`, diffusion method, and diffusion samplers are both generic to any dimension and highly customizable.
+A fully featured audio diffusion library, for PyTorch. Includes models for unconditional audio generation, text-conditional audio generation, diffusion autoencoding, upsampling, and vocoding. The provided models are waveform-based, however, the U-Net (built using [`a-unet`](https://github.com/archinetai/a-unet)), `DiffusionModel`, diffusion method, and diffusion samplers are both generic to any dimension and highly customizable to work on other formats.
 
 ## Install
 
@@ -14,7 +14,8 @@ pip install -U git+https://github.com/archinetai/audio-diffusion-pytorch.git@nig
 
 ## Usage
 
-### Unconditional Generation
+### Unconditional Generator
+
 ```py
 from audio_diffusion_pytorch import DiffusionModel, UNetV0, VDiffusion, VSampler
 
@@ -38,12 +39,13 @@ loss.backward()
 
 # Turn noise into new audio sample with diffusion
 noise = torch.randn(1, 2, 2**18) # [batch_size, in_channels, length]
-sample = model.sample(noise, num_steps=10) # Suggested num_steps 10-50
+sample = model.sample(noise, num_steps=10) # Suggested num_steps 10-100
 ```
 
-### Text-Conditional Generation
+### Text-Conditional Generator
+A text-to-audio diffusion model that conditions the generation with `t5-base` text embeddings, requires `pip install transformers`.
 ```py
-from audio_diffusion_pytorch.models import DiffusionModel, UNetV0, VDiffusion, VSampler
+from audio_diffusion_pytorch import DiffusionModel, UNetV0, VDiffusion, VSampler
 
 model = DiffusionModel(
     # ... same as unconditional model
@@ -69,13 +71,14 @@ sample = model.sample(
     noise,
     text=['The audio description'],
     embedding_scale=5.0, # Higher for more text importance, suggested range: 1-15 (Classifier-Free Guidance Scale)
-    num_steps=2 # Higher for better quality, suggested num_steps: 10-50
+    num_steps=2 # Higher for better quality, suggested num_steps: 10-100
 )
 ```
 
-### Upsampling
+### Diffusion Upsampler
+Upsample audio from a lower sample rate to higher sample rate using diffusion, e.g. 3kHz to 48kHz:
 ```py
-from audio_diffusion_pytorch.models import DiffusionUpsampler, UNetV0, VDiffusion, VSampler
+from audio_diffusion_pytorch import DiffusionUpsampler, UNetV0, VDiffusion, VSampler
 
 upsampler = DiffusionUpsampler(
     net_t=UNetV0, # The model type used for diffusion
@@ -98,9 +101,10 @@ downsampled_audio = torch.randn(1, 2, 2**14) # [batch, in_channels, length]
 sample = upsampler.sample(downsampled_audio, num_steps=10) # Output has shape: [1, 2, 2**18]
 ```
 
-### Vocoding
+### Diffusion Vocoder
+Convert a mel-spectrogram to wavefrom using diffusion:
 ```py
-from audio_diffusion_pytorch.models import DiffusionVocoder, UNetV0, VDiffusion, VSampler
+from audio_diffusion_pytorch import DiffusionVocoder, UNetV0, VDiffusion, VSampler
 
 vocoder = DiffusionVocoder(
     mel_n_fft=1024, # Mel-spectrogram n_fft
@@ -123,4 +127,93 @@ loss.backward()
 # Turn mel spectrogram into waveform
 mel_spectrogram = torch.randn(1, 2, 80, 1024) # [batch, in_channels, mel_channels, mel_length]
 sample = vocoder.sample(mel_spectrogram, num_steps=10) # Output has shape: [1, 2, 2**18]
+```
+
+## Diffusion Autoencoder
+Autoencode audio into a compressed latent using diffusion. Any encoder can be provided as long as it has `out_channels` and `downsample_factor` attributes that can be used to infer the original audio length from the latent.
+```py
+from audio_diffusion_pytorch import DiffusionAE, UNetV0, VDiffusion, VSampler
+from audio_encoders_pytorch import MelE1d, TanhBottleneck
+
+autoencoder = DiffusionAE(
+    encoder=MelE1d( # The encoder used, in this case a mel-spectrogram encoder
+        in_channels=2,
+        channels=512,
+        multipliers=[1, 1],
+        factors=[2],
+        num_blocks=[12],
+        out_channels=32,
+        mel_channels=80,
+        mel_sample_rate=48000,
+        mel_normalize_log=True,
+        bottleneck=TanhBottleneck(),
+    ),
+    inject_depth=6,
+    net_t=UNetV0, # The model type used for diffusion upsampling
+    in_channels=2, # U-Net: number of input/output (audio) channels
+    channels=[8, 32, 64, 128, 256, 512, 512, 1024, 1024], # U-Net: channels at each layer
+    factors=[1, 4, 4, 4, 2, 2, 2, 2, 2], # U-Net: downsampling and upsampling factors at each layer
+    items=[1, 2, 2, 2, 2, 2, 2, 4, 4], # U-Net: number of repeating items at each layer
+    diffusion_t=VDiffusion, # The diffusion method used
+    sampler_t=VSampler, # The diffusion sampler used
+)
+
+# Train autoencoder with audio samples
+audio = torch.randn(1, 2, 2**18) # [batch, in_channels, length]
+loss = autoencoder(audio)
+loss.backward()
+
+# Encode/decode audio
+audio = torch.randn(1, 2, 2**18) # [batch, in_channels, length]
+latent = autoencoder.encode(audio) # Encode
+sample = autoencoder.decode(latent, num_steps=10) # Decode by sampling diffusion model conditioning on latent
+```
+
+## Appreciation
+
+* [StabilityAI](https://stability.ai/) for the compute, [Zach Evans](https://github.com/zqevans) and everyone else from [HarmonAI](https://www.harmonai.org/) for the interesting research discussions.
+* [ETH Zurich](https://inf.ethz.ch/) for the resources, [Zhijing Jin](https://zhijing-jin.com/), [Bernhard Schoelkopf](https://is.mpg.de/~bs), and [Mrinmaya Sachan](http://www.mrinmaya.io/) for supervising this Thesis.
+* [Phil Wang](https://github.com/lucidrains) for the beautiful open source contributions on [diffusion](https://github.com/lucidrains/denoising-diffusion-pytorch) and [Imagen](https://github.com/lucidrains/imagen-pytorch).
+* [Katherine Crowson](https://github.com/crowsonkb) for the experiments with [k-diffusion](https://github.com/crowsonkb/k-diffusion) and the insane collection of samplers.
+
+## Citations
+
+DDPM Diffusion
+```bibtex
+@misc{2006.11239,
+Author = {Jonathan Ho and Ajay Jain and Pieter Abbeel},
+Title = {Denoising Diffusion Probabilistic Models},
+Year = {2020},
+Eprint = {arXiv:2006.11239},
+}
+```
+
+DDIM (V-Sampler)
+```bibtex
+@misc{2010.02502,
+Author = {Jiaming Song and Chenlin Meng and Stefano Ermon},
+Title = {Denoising Diffusion Implicit Models},
+Year = {2020},
+Eprint = {arXiv:2010.02502},
+}
+```
+
+V-Diffusion
+```bibtex
+@misc{2202.00512,
+Author = {Tim Salimans and Jonathan Ho},
+Title = {Progressive Distillation for Fast Sampling of Diffusion Models},
+Year = {2022},
+Eprint = {arXiv:2202.00512},
+}
+```
+
+Imagen (T5 Text Conditioning)
+```bibtex
+@misc{2205.11487,
+Author = {Chitwan Saharia and William Chan and Saurabh Saxena and Lala Li and Jay Whang and Emily Denton and Seyed Kamyar Seyed Ghasemipour and Burcu Karagol Ayan and S. Sara Mahdavi and Rapha Gontijo Lopes and Tim Salimans and Jonathan Ho and David J Fleet and Mohammad Norouzi},
+Title = {Photorealistic Text-to-Image Diffusion Models with Deep Language Understanding},
+Year = {2022},
+Eprint = {arXiv:2205.11487},
+}
 ```

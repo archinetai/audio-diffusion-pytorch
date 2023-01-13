@@ -3,7 +3,7 @@ from setuptools import find_packages, setup
 setup(
     name="audio-diffusion-pytorch",
     packages=find_packages(exclude=[]),
-    version="0.0.5+nightly",
+    version="0.0.6+nightly",
     license="MIT",
     description="Audio Diffusion - PyTorch",
     long_description_content_type="text/markdown",
@@ -18,7 +18,6 @@ setup(
         "data-science-types>=0.2",
         "einops>=0.6",
         "einops-exts>=0.0.3",
-        "audio-encoders-pytorch",
         "a-unet",
     ],
     classifiers=[
