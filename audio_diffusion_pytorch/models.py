@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 from math import floor
 from typing import Any, Callable, Optional, Sequence, Tuple, Union
 
@@ -35,6 +36,16 @@ class DiffusionModel(nn.Module):
         return self.sampler(*args, **kwargs)
 
 
+class EncoderBase(nn.Module, ABC):
+    """Abstract class for DiffusionAE encoder"""
+
+    @abstractmethod
+    def __init__(self):
+        super().__init__()
+        self.out_channels = None
+        self.downsample_factor = None
+
+
 class DiffusionAE(DiffusionModel):
     """Diffusion Auto Encoder"""
 
@@ -42,12 +53,12 @@ class DiffusionAE(DiffusionModel):
         self,
         in_channels: int,
         channels: Sequence[int],
-        encoder: nn.Module,
+        encoder: EncoderBase,
         inject_depth: int,
         **kwargs,
     ):
         context_channels = [0] * len(channels)
-        context_channels[inject_depth] = encoder.out_channels  # type: ignore
+        context_channels[inject_depth] = encoder.out_channels
         super().__init__(
             in_channels=in_channels,
             channels=channels,
@@ -74,7 +85,7 @@ class DiffusionAE(DiffusionModel):
         self, latent: Tensor, generator: Optional[Generator] = None, **kwargs
     ) -> Tensor:
         b = latent.shape[0]
-        length = closest_power_2(latent.shape[2] * self.encoder.downsample_factor)  # type: ignore # noqa
+        length = closest_power_2(latent.shape[2] * self.encoder.downsample_factor)
         # Compute noise by inferring shape from latent length
         noise = torch.randn(
             (b, self.in_channels, length),

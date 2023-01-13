@@ -130,7 +130,7 @@ sample = vocoder.sample(mel_spectrogram, num_steps=10) # Output has shape: [1, 2
 ```
 
 ## Diffusion Autoencoder
-Autoencode audio into a compressed latent using diffusion. Any encoder can be provided as long as it has `out_channels` and `downsample_factor` attributes that can be used to infer the original audio length from the latent.
+Autoencode audio into a compressed latent using diffusion. Any encoder can be provided as long as it subclasses the `EncoderBase` class or contains an `out_channels` and `downsample_factor` field.
 ```py
 from audio_diffusion_pytorch import DiffusionAE, UNetV0, VDiffusion, VSampler
 from audio_encoders_pytorch import MelE1d, TanhBottleneck
