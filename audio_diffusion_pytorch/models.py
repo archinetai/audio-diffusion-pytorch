@@ -1,12 +1,14 @@
+from math import floor
 from typing import Any, Callable, Optional, Sequence, Tuple, Union
 
 import torch
 from audio_encoders_pytorch import Encoder1d
+from einops import pack, rearrange, unpack
 from torch import Generator, Tensor, nn
 
-from .components import AppendChannelsPlugin, UNetV0
+from .components import AppendChannelsPlugin, MelSpectrogram, UNetV0
 from .diffusion import ARVDiffusion, ARVSampler, VDiffusion, VSampler
-from .utils import closest_power_2, downsample, groupby, randn_like, upsample
+from .utils import closest_power_2, default, downsample, groupby, randn_like, upsample
 
 
 class DiffusionModel(nn.Module):
@@ -29,6 +31,7 @@ class DiffusionModel(nn.Module):
     def forward(self, *args, **kwargs) -> Tensor:
         return self.diffusion(*args, **kwargs)
 
+    @torch.no_grad()
     def sample(self, *args, **kwargs) -> Tensor:
         return self.sampler(*args, **kwargs)
 
@@ -67,6 +70,7 @@ class DiffusionAE(DiffusionModel):
     def encode(self, *args, **kwargs):
         return self.encoder(*args, **kwargs)
 
+    @torch.no_grad()
     def decode(
         self, latent: Tensor, generator: Optional[Generator] = None, **kwargs
     ) -> Tensor:
@@ -111,12 +115,72 @@ class DiffusionUpsampler(DiffusionModel):
         reupsampled = self.reupsample(x)
         return super().forward(x, *args, append_channels=reupsampled, **kwargs)
 
+    @torch.no_grad()
     def sample(  # type: ignore
         self, downsampled: Tensor, generator: Optional[Generator] = None, **kwargs
     ) -> Tensor:
         reupsampled = upsample(downsampled, factor=self.upsample_factor)
         noise = randn_like(reupsampled, generator=generator)
         return super().sample(noise, append_channels=reupsampled, **kwargs)
+
+
+class DiffusionVocoder(DiffusionModel):
+    def __init__(
+        self,
+        mel_channels: int,
+        mel_n_fft: int,
+        mel_hop_length: Optional[int] = None,
+        mel_win_length: Optional[int] = None,
+        in_channels: int = 1,  # Ignored: channels are automatically batched.
+        net_t: Callable = UNetV0,
+        **kwargs,
+    ):
+        mel_hop_length = default(mel_hop_length, floor(mel_n_fft) // 4)
+        mel_win_length = default(mel_win_length, mel_n_fft)
+        mel_kwargs, kwargs = groupby("mel_", kwargs)
+        super().__init__(
+            net_t=AppendChannelsPlugin(net_t, channels=1),
+            in_channels=1,
+            **kwargs,
+        )
+        self.to_spectrogram = MelSpectrogram(
+            n_fft=mel_n_fft,
+            hop_length=mel_hop_length,
+            win_length=mel_win_length,
+            n_mel_channels=mel_channels,
+            **mel_kwargs,
+        )
+        self.to_flat = nn.ConvTranspose1d(
+            in_channels=mel_channels,
+            out_channels=1,
+            kernel_size=mel_win_length,
+            stride=mel_hop_length,
+            padding=(mel_win_length - mel_hop_length) // 2,
+            bias=False,
+        )
+
+    def forward(self, x: Tensor, *args, **kwargs) -> Tensor:  # type: ignore
+        # Get spectrogram, pack channels and flatten
+        spectrogram = rearrange(self.to_spectrogram(x), "b c f l -> (b c) f l")
+        spectrogram_flat = self.to_flat(spectrogram)
+        # Pack wave channels
+        x = rearrange(x, "b c t -> (b c) 1 t")
+        return super().forward(x, *args, append_channels=spectrogram_flat, **kwargs)
+
+    @torch.no_grad()
+    def sample(  # type: ignore
+        self, spectrogram: Tensor, generator: Optional[Generator] = None, **kwargs
+    ) -> Tensor:  # type: ignore
+        # Pack channels and flatten spectrogram
+        spectrogram, ps = pack([spectrogram], "* f l")
+        spectrogram_flat = self.to_flat(spectrogram)
+        # Get start noise and sample
+        noise = randn_like(spectrogram_flat, generator=generator)
+        waveform = super().sample(noise, append_channels=spectrogram_flat, **kwargs)
+        # Unpack wave channels
+        waveform = rearrange(waveform, "... 1 t -> ... t")
+        waveform = unpack(waveform, ps, "* t")[0]
+        return waveform
 
 
 class DiffusionAR(DiffusionModel):

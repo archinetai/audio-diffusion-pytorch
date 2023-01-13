@@ -11,4 +11,10 @@ from .diffusion import (
     VDiffusion,
     VSampler,
 )
-from .models import DiffusionAE, DiffusionAR, DiffusionModel, DiffusionUpsampler
+from .models import (
+    DiffusionAE,
+    DiffusionAR,
+    DiffusionModel,
+    DiffusionUpsampler,
+    DiffusionVocoder,
+)
