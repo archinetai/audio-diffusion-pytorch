@@ -5,7 +5,7 @@ A fully featured audio diffusion library, for PyTorch. Includes models for uncon
 ## Install
 
 ```bash
-pip install -U git+https://github.com/archinetai/audio-diffusion-pytorch.git@nightly
+pip install audio-diffusion-pytorch
 ```
 
 [![PyPI - Python Version](https://img.shields.io/pypi/v/audio-diffusion-pytorch?style=flat&colorA=black&colorB=black)](https://pypi.org/project/audio-diffusion-pytorch/)
