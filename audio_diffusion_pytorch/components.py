@@ -14,6 +14,7 @@ from a_unet import (
 from a_unet.apex import (
     AttentionItem,
     CrossAttentionItem,
+    LinearAttentionItem,
     InjectChannelsItem,
     ModulationItem,
     ResnetItem,
@@ -39,6 +40,7 @@ def UNetV0(
     items: Sequence[int],
     attentions: Optional[Sequence[int]] = None,
     cross_attentions: Optional[Sequence[int]] = None,
+    linear_attentions: Optional[Sequence[int]] = None,
     context_channels: Optional[Sequence[int]] = None,
     attention_features: Optional[int] = None,
     attention_heads: Optional[int] = None,
@@ -56,8 +58,9 @@ def UNetV0(
     num_layers = len(channels)
     attentions = default(attentions, [0] * num_layers)
     cross_attentions = default(cross_attentions, [0] * num_layers)
+    linear_attentions = default(linear_attentions, [0] * num_layers)
     context_channels = default(context_channels, [0] * num_layers)
-    xs = (channels, factors, items, attentions, cross_attentions, context_channels)
+    xs = (channels, factors, items, attentions, cross_attentions, linear_attentions, context_channels)
     assert all(len(x) == num_layers for x in xs)  # type: ignore
 
     # Define UNet type
@@ -91,10 +94,11 @@ def UNetV0(
                     + [InjectChannelsItem] * (ctx_channels > 0)
                     + [AttentionItem] * att
                     + [CrossAttentionItem] * cross
+                    + [LinearAttentionItem] * linear
                 )
                 * items,
             )
-            for channels, factor, items, att, cross, ctx_channels in zip(*xs)  # type: ignore # noqa
+            for channels, factor, items, att, cross, linear, ctx_channels in zip(*xs)  # type: ignore # noqa
         ],
         skip_t=SkipModulate if use_modulation else SkipCat,
         attention_features=attention_features,
