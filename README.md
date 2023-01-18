@@ -51,7 +51,7 @@ from audio_diffusion_pytorch import DiffusionModel, UNetV0, VDiffusion, VSampler
 model = DiffusionModel(
     # ... same as unconditional model
     use_text_conditioning=True, # U-Net: enables text conditioning (default T5-base)
-    use_embedding_cfg=True # U-Net: enables classifier free guidance
+    use_embedding_cfg=True, # U-Net: enables classifier free guidance
     embedding_max_length=64, # U-Net: text embedding maximum length (default for T5-base)
     embedding_features=768, # U-Net: text mbedding features (default for T5-base)
     cross_attentions=[0, 0, 0, 1, 1, 1, 1, 1, 1], # U-Net: cross-attention enabled/disabled at each layer
