@@ -15,6 +15,8 @@ from a_unet.apex import (
     AttentionItem,
     CrossAttentionItem,
     LinearAttentionItem,
+    TiledAttentionItem,
+    TiledCrossAttentionItem,
     InjectChannelsItem,
     ModulationItem,
     ResnetItem,
@@ -41,10 +43,13 @@ def UNetV0(
     attentions: Optional[Sequence[int]] = None,
     cross_attentions: Optional[Sequence[int]] = None,
     linear_attentions: Optional[Sequence[int]] = None,
+    tiled_attentions: Optional[Sequence[int]] = None,
+    tiled_cross_attentions: Optional[Sequence[int]] = None,
     context_channels: Optional[Sequence[int]] = None,
     attention_features: Optional[int] = None,
     attention_heads: Optional[int] = None,
     embedding_features: Optional[int] = None,
+    tile_size: Optional[int] = None,
     resnet_groups: int = 8,
     use_modulation: bool = True,
     modulation_features: int = 1024,
@@ -59,8 +64,10 @@ def UNetV0(
     attentions = default(attentions, [0] * num_layers)
     cross_attentions = default(cross_attentions, [0] * num_layers)
     linear_attentions = default(linear_attentions, [0] * num_layers)
+    tiled_attentions = default(tiled_attentions, [0] * num_layers)
+    tiled_cross_attentions = default(tiled_cross_attentions, [0] * num_layers)
     context_channels = default(context_channels, [0] * num_layers)
-    xs = (channels, factors, items, attentions, cross_attentions, linear_attentions, context_channels)
+    xs = (channels, factors, items, attentions, cross_attentions, linear_attentions, tiled_attentions, tiled_cross_attentions, context_channels)
     assert all(len(x) == num_layers for x in xs)  # type: ignore
 
     # Define UNet type
@@ -92,18 +99,21 @@ def UNetV0(
                     [ResnetItem]
                     + [ModulationItem] * use_modulation
                     + [InjectChannelsItem] * (ctx_channels > 0)
+                    + [TiledAttentionItem] * tile
+                    + [TiledCrossAttentionItem] * tile_cross
                     + [AttentionItem] * att
                     + [CrossAttentionItem] * cross
                     + [LinearAttentionItem] * linear
                 )
                 * items,
             )
-            for channels, factor, items, att, cross, linear, ctx_channels in zip(*xs)  # type: ignore # noqa
+            for channels, factor, items, att, cross, linear, tile, tile_cross, ctx_channels in zip(*xs)  # type: ignore # noqa
         ],
         skip_t=SkipModulate if use_modulation else SkipCat,
         attention_features=attention_features,
         attention_heads=attention_heads,
         embedding_features=embedding_features,
+        tile_size=tile_size,
         modulation_features=modulation_features,
         resnet_groups=resnet_groups,
     )
