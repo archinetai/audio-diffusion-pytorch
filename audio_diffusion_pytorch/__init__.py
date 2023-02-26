@@ -7,6 +7,7 @@ from .diffusion import (
     Schedule,
     UniformDistribution,
     VDiffusion,
+    VInpainter,
     VSampler,
 )
 from .models import (
@@ -15,4 +16,5 @@ from .models import (
     DiffusionModel,
     DiffusionUpsampler,
     DiffusionVocoder,
+    EncoderBase,
 )

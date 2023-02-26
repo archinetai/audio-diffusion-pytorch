@@ -1,6 +1,6 @@
 <img src="./LOGO.png"></img>
 
-A fully featured audio diffusion library, for PyTorch. Includes models for unconditional audio generation, text-conditional audio generation, diffusion autoencoding, upsampling, and vocoding. The provided models are waveform-based, however, the U-Net (built using [`a-unet`](https://github.com/archinetai/a-unet)), `DiffusionModel`, diffusion method, and diffusion samplers are both generic to any dimension and highly customizable to work on other formats.
+A fully featured audio diffusion library, for PyTorch. Includes models for unconditional audio generation, text-conditional audio generation, diffusion autoencoding, upsampling, and vocoding. The provided models are waveform-based, however, the U-Net (built using [`a-unet`](https://github.com/archinetai/a-unet)), `DiffusionModel`, diffusion method, and diffusion samplers are both generic to any dimension and highly customizable to work on other formats. **Note: no pre-trained models are provided here, this library is meant for research purposes.**
 
 
 ## Install
@@ -51,7 +51,7 @@ from audio_diffusion_pytorch import DiffusionModel, UNetV0, VDiffusion, VSampler
 model = DiffusionModel(
     # ... same as unconditional model
     use_text_conditioning=True, # U-Net: enables text conditioning (default T5-base)
-    use_embedding_cfg=True # U-Net: enables classifier free guidance
+    use_embedding_cfg=True, # U-Net: enables classifier free guidance
     embedding_max_length=64, # U-Net: text embedding maximum length (default for T5-base)
     embedding_features=768, # U-Net: text mbedding features (default for T5-base)
     cross_attentions=[0, 0, 0, 1, 1, 1, 1, 1, 1], # U-Net: cross-attention enabled/disabled at each layer
@@ -130,7 +130,7 @@ mel_spectrogram = torch.randn(1, 2, 80, 1024) # [batch, in_channels, mel_channel
 sample = vocoder.sample(mel_spectrogram, num_steps=10) # Output has shape: [1, 2, 2**18]
 ```
 
-## Diffusion Autoencoder
+### Diffusion Autoencoder
 Autoencode audio into a compressed latent using diffusion. Any encoder can be provided as long as it subclasses the `EncoderBase` class or contains an `out_channels` and `downsample_factor` field.
 ```py
 from audio_diffusion_pytorch import DiffusionAE, UNetV0, VDiffusion, VSampler
@@ -168,6 +168,37 @@ loss.backward()
 audio = torch.randn(1, 2, 2**18) # [batch, in_channels, length]
 latent = autoencoder.encode(audio) # Encode
 sample = autoencoder.decode(latent, num_steps=10) # Decode by sampling diffusion model conditioning on latent
+```
+
+## Other
+
+### Inpainting
+```py
+from audio_diffusion_pytorch import UNetV0, VInpainter
+
+# The diffusion UNetV0 (this is an example, the net must be trained to work)
+net = UNetV0(
+    dim=1,
+    in_channels=2, # U-Net: number of input/output (audio) channels
+    channels=[8, 32, 64, 128, 256, 512, 512, 1024, 1024], # U-Net: channels at each layer
+    factors=[1, 4, 4, 4, 2, 2, 2, 2, 2], # U-Net: downsampling and upsampling factors at each layer
+    items=[1, 2, 2, 2, 2, 2, 2, 4, 4], # U-Net: number of repeating items at each layer
+    attentions=[0, 0, 0, 0, 0, 1, 1, 1, 1], # U-Net: attention enabled/disabled at each layer
+    attention_heads=8, # U-Net: number of attention heads per attention block
+    attention_features=64, # U-Net: number of attention features per attention block,
+)
+
+# Instantiate inpainter with trained net
+inpainter = VInpainter(net=net)
+
+# Inpaint source
+y = inpainter(
+    source=torch.randn(1, 2, 2**18), # Start source
+    mask=torch.randint(0, 2, (1, 2, 2 ** 18), dtype=torch.bool),  # Set to `True` the parts you want to keep
+    num_steps=10, # Number of inpainting steps
+    num_resamples=2, # Number of resampling steps
+    show_progress=True,
+) # [1, 2, 2 ** 18]
 ```
 
 ## Appreciation
