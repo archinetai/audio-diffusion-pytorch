@@ -8,6 +8,8 @@ from einops import rearrange, repeat
 from torch import Tensor
 from tqdm import tqdm
 
+from .utils import default
+
 """ Distributions """
 
 
@@ -166,6 +168,7 @@ class VSampler(Sampler):
         alpha, beta = torch.cos(angle), torch.sin(angle)
         return alpha, beta
 
+    @torch.no_grad()
     def forward(  # type: ignore
         self, x_noisy: Tensor, num_steps: int, show_progress: bool = False, **kwargs
     ) -> Tensor:
@@ -242,6 +245,7 @@ class ARVSampler(Sampler):
         # Sample start
         return self.sample_loop(current=noise, sigmas=sigmas, **kwargs)
 
+    @torch.no_grad()
     def forward(
         self,
         num_items: int,
@@ -289,3 +293,61 @@ class ARVSampler(Sampler):
             chunks += [torch.randn(shape, device=self.device)]
 
         return torch.cat(chunks[:num_chunks], dim=-1)
+
+
+"""  Inpainters """
+
+
+class Inpainter(nn.Module):
+    pass
+
+
+class VInpainter(Inpainter):
+
+    diffusion_types = [VDiffusion]
+
+    def __init__(self, net: nn.Module, schedule: Schedule = LinearSchedule()):
+        super().__init__()
+        self.net = net
+        self.schedule = schedule
+
+    def get_alpha_beta(self, sigmas: Tensor) -> Tuple[Tensor, Tensor]:
+        angle = sigmas * pi / 2
+        alpha, beta = torch.cos(angle), torch.sin(angle)
+        return alpha, beta
+
+    @torch.no_grad()
+    def forward(  # type: ignore
+        self,
+        source: Tensor,
+        mask: Tensor,
+        num_steps: int,
+        num_resamples: int,
+        show_progress: bool = False,
+        x_noisy: Optional[Tensor] = None,
+        **kwargs,
+    ) -> Tensor:
+        x_noisy = default(x_noisy, lambda: torch.randn_like(source))
+        b = x_noisy.shape[0]
+        sigmas = self.schedule(num_steps + 1, device=x_noisy.device)
+        sigmas = repeat(sigmas, "i -> i b", b=b)
+        sigmas_batch = extend_dim(sigmas, dim=x_noisy.ndim + 1)
+        alphas, betas = self.get_alpha_beta(sigmas_batch)
+        progress_bar = tqdm(range(num_steps), disable=not show_progress)
+
+        for i in progress_bar:
+            for r in range(num_resamples):
+                v_pred = self.net(x_noisy, sigmas[i], **kwargs)
+                x_pred = alphas[i] * x_noisy - betas[i] * v_pred
+                noise_pred = betas[i] * x_noisy + alphas[i] * v_pred
+                # Renoise to current noise level if resampling
+                j = r == num_resamples - 1
+                x_noisy = alphas[i + j] * x_pred + betas[i + j] * noise_pred
+                s_noisy = alphas[i + j] * source + betas[i + j] * torch.randn_like(
+                    source
+                )
+                x_noisy = s_noisy * mask + x_noisy * ~mask
+
+            progress_bar.set_description(f"Inpainting (noise={sigmas[i+1,0]:.2f})")
+
+        return x_noisy

@@ -170,6 +170,37 @@ latent = autoencoder.encode(audio) # Encode
 sample = autoencoder.decode(latent, num_steps=10) # Decode by sampling diffusion model conditioning on latent
 ```
 
+## Other
+
+### Inpainting
+```py
+from audio_diffusion_pytorch import UNetV0, VInpainter
+
+# The diffusion UNetV0 (this is an example, the net must be trained to work)
+net = UNetV0(
+    dim=1,
+    in_channels=2, # U-Net: number of input/output (audio) channels
+    channels=[8, 32, 64, 128, 256, 512, 512, 1024, 1024], # U-Net: channels at each layer
+    factors=[1, 4, 4, 4, 2, 2, 2, 2, 2], # U-Net: downsampling and upsampling factors at each layer
+    items=[1, 2, 2, 2, 2, 2, 2, 4, 4], # U-Net: number of repeating items at each layer
+    attentions=[0, 0, 0, 0, 0, 1, 1, 1, 1], # U-Net: attention enabled/disabled at each layer
+    attention_heads=8, # U-Net: number of attention heads per attention block
+    attention_features=64, # U-Net: number of attention features per attention block,
+)
+
+# Instantiate inpainter with trained net
+inpainter = VInpainter(net=net)
+
+# Inpaint source
+y = inpainter(
+    source=torch.randn(1, 2, 2**18), # Start source
+    mask=torch.randint(0, 2, (1, 2, 2 ** 18), dtype=torch.bool),  # Set to `True` the parts you want to keep
+    num_steps=10, # Number of inpainting steps
+    num_resamples=2, # Number of resampling steps
+    show_progress=True,
+) # [1, 2, 2 ** 18]
+```
+
 ## Appreciation
 
 * [StabilityAI](https://stability.ai/) for the compute, [Zach Evans](https://github.com/zqevans) and everyone else from [HarmonAI](https://www.harmonai.org/) for the interesting research discussions.
