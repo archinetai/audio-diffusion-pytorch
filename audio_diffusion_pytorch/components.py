@@ -173,6 +173,49 @@ def LTPlugin(
     return Net
 
 
+def LTPlugin2(
+    net_t_inner: Callable, num_filters: int, window_length: int, stride: int,
+    dim: int, in_channels: int, out_channels: Optional[int] = None, **kwargs
+) -> nn.Module:
+    out_channels = default(out_channels, in_channels)
+    in_channel_transform = in_channels * num_filters
+    out_channel_transform = out_channels * num_filters  # type: ignore
+
+    padding = window_length // 2 - stride // 2
+    encode = Conv(
+        dim=dim,
+        in_channels=in_channels,
+        out_channels=in_channel_transform,
+        kernel_size=window_length,
+        stride=stride,
+        padding=padding,
+        padding_mode="reflect",
+        bias=False,
+    )
+    decode = nn.ConvTranspose1d(
+        in_channels=out_channel_transform,
+        out_channels=out_channels,  # type: ignore
+        kernel_size=window_length,
+        stride=stride,
+        padding=padding,
+        bias=False,
+    )
+    net = net_t_inner(  # type: ignore
+        dim=dim,
+        in_channels=in_channel_transform,
+        out_channels=out_channel_transform,
+        **kwargs
+    )
+
+    def forward(x: Tensor, *args, **kwargs):
+        x = encode(x)
+        x = net(x, *args, **kwargs)
+        x = decode(x)
+        return x
+
+    return Module([encode, decode, net], forward)
+
+
 def AppendChannelsPlugin(
     net_t: Callable,
     channels: int,

@@ -23,6 +23,7 @@ class DiffusionModel(nn.Module):
     def __init__(
         self,
         net_t: Callable,
+        net_t_inner: Callable,
         diffusion_t: Callable = VDiffusion,
         sampler_t: Callable = VSampler,
         dim: int = 1,
@@ -32,7 +33,7 @@ class DiffusionModel(nn.Module):
         diffusion_kwargs, kwargs = groupby("diffusion_", kwargs)
         sampler_kwargs, kwargs = groupby("sampler_", kwargs)
 
-        self.net = net_t(dim=dim, **kwargs)
+        self.net = net_t(dim=dim, net_t_inner=net_t_inner, **kwargs)
         self.diffusion = diffusion_t(net=self.net, **diffusion_kwargs)
         self.sampler = sampler_t(net=self.net, **sampler_kwargs)
 
@@ -73,7 +74,7 @@ class DiffusionAE(DiffusionModel):
         self,
         in_channels: int,
         channels: Sequence[int],
-        encoder: EncoderBase,
+        encoder: nn.Module,
         inject_depth: int,
         latent_factor: Optional[int] = None,
         adapter: Optional[AdapterBase] = None,
