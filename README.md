@@ -1,6 +1,6 @@
 <img src="./LOGO.png"></img>
 
-A fully featured audio diffusion library, for PyTorch. Includes models for unconditional audio generation, text-conditional audio generation, diffusion autoencoding, upsampling, and vocoding. The provided models are waveform-based, however, the U-Net (built using [`a-unet`](https://github.com/archinetai/a-unet)), `DiffusionModel`, diffusion method, and diffusion samplers are both generic to any dimension and highly customizable to work on other formats. **Note: no pre-trained models are provided here, this library is meant for research purposes.**
+A fully featured audio diffusion library, for PyTorch. Includes models for unconditional audio generation, text-conditional audio generation, diffusion autoencoding, upsampling, and vocoding. The provided models are waveform-based, however, the U-Net (built using [`a-unet`](https://github.com/archinetai/a-unet)), `DiffusionModel`, diffusion method, and diffusion samplers are both generic to any dimension and highly customizable to work on other formats. **Notes: (1) no pre-trained models are provided here, (2) the configs shown are indicative and untested, see [Moûsai](https://arxiv.org/abs/2301.11757) for the configs used in the paper.**
 
 
 ## Install
