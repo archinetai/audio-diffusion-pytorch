@@ -67,11 +67,12 @@ class Diffusion(nn.Module):
 
 class VDiffusion(Diffusion):
     def __init__(
-        self, net: nn.Module, sigma_distribution: Distribution = UniformDistribution()
+        self, net: nn.Module, sigma_distribution: Distribution = UniformDistribution(), loss_fn: Any = F.mse_loss
     ):
         super().__init__()
         self.net = net
         self.sigma_distribution = sigma_distribution
+        self.loss_fn = loss_fn
 
     def get_alpha_beta(self, sigmas: Tensor) -> Tuple[Tensor, Tensor]:
         angle = sigmas * pi / 2
@@ -91,17 +92,18 @@ class VDiffusion(Diffusion):
         v_target = alphas * noise - betas * x
         # Predict velocity and return loss
         v_pred = self.net(x_noisy, sigmas, **kwargs)
-        return F.mse_loss(v_pred, v_target)
+        return self.loss_fn(v_pred, v_target)
 
 
 class ARVDiffusion(Diffusion):
-    def __init__(self, net: nn.Module, length: int, num_splits: int):
+    def __init__(self, net: nn.Module, length: int, num_splits: int, loss_fn: Any = F.mse_loss):
         super().__init__()
         assert length % num_splits == 0, "length must be divisible by num_splits"
         self.net = net
         self.length = length
         self.num_splits = num_splits
         self.split_length = length // num_splits
+        self.loss_fn = loss_fn
 
     def get_alpha_beta(self, sigmas: Tensor) -> Tuple[Tensor, Tensor]:
         angle = sigmas * pi / 2
@@ -125,8 +127,7 @@ class ARVDiffusion(Diffusion):
         channels = torch.cat([x_noisy, sigmas], dim=1)
         # Predict velocity and return loss
         v_pred = self.net(channels, **kwargs)
-        return F.mse_loss(v_pred, v_target)
-
+        return self.loss_fn(v_pred, v_target)
 
 """ Schedules """
 
